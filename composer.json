@@ -1,0 +1,54 @@
+{
+    "name": "ekumanov/flarum-ext-link-preview",
+    "description": "Renders OpenGraph/Twitter-Card preview cards for plain links in Flarum 2.0 posts. SSRF-hardened server-side fetcher, queue-backed, with hover previews, per-card pin/dismiss controls, and a self-link short-circuit.",
+    "keywords": [
+        "flarum",
+        "extension",
+        "link-preview",
+        "opengraph",
+        "preview-card"
+    ],
+    "type": "flarum-extension",
+    "license": "MIT",
+    "require": {
+        "flarum/core": "^2.0",
+        "php": "^8.2",
+        "ext-curl": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0"
+    },
+    "authors": [
+        {
+            "name": "ekumanov",
+            "email": "ekumanov@users.noreply.github.com"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Ekumanov\\LinkPreview\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Ekumanov\\LinkPreview\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit --colors=always",
+        "test:unit": "phpunit --colors=always --testsuite=unit"
+    },
+    "extra": {
+        "flarum-extension": {
+            "title": "Link Preview",
+            "category": "feature",
+            "icon": {
+                "name": "fas fa-link",
+                "backgroundColor": "#6E5494",
+                "color": "#fff"
+            }
+        }
+    },
+    "minimum-stability": "beta",
+    "prefer-stable": true
+}

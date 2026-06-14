@@ -1,0 +1,20 @@
+vendor/
+node_modules/
+composer.lock
+js/dist/*.map
+.idea/
+.vscode/
+*.DS_Store
+.claude/
+.phpunit.cache/
+.phpunit.result.cache
+
+# Local-only dev smoke scripts (hardcoded localhost paths + creds).
+# The PHPUnit suites under tests/Unit and tests/Integration are committed.
+tests/smoke*.php
+tests/*.sh
+
+docs/discuss-posts/
+
+# Private operator notes (data-migration runbooks). Never published.
+docs/internal/

@@ -1,0 +1,238 @@
+.LinkPreview-card-wrapper {
+    position: relative;
+    margin: 8px 0;
+}
+
+.LinkPreview-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin: 0;
+    padding: 12px;
+    border: 1px solid var(--control-bg);
+    border-radius: var(--border-radius);
+    background: var(--control-bg);
+    color: var(--text-color);
+    text-decoration: none;
+    overflow: hidden;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+
+    &,
+    &:hover,
+    &:focus,
+    &:active {
+        text-decoration: none;
+    }
+
+    &:hover,
+    &:focus {
+        background: var(--body-bg);
+        border-color: var(--muted-color);
+        color: var(--text-color);
+    }
+}
+
+// Desktop: compact square side-thumbnail (Slack/Discord style). A 1:1 crop
+// loses less of a 1.91:1 OG image than the old 4:3 slot did. `aspect-ratio`
+// keeps it square regardless of how the source scales.
+.LinkPreview-card-image {
+    flex: 0 0 auto;
+    width: 96px;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: calc(var(--border-radius) * 0.5);
+    background: var(--body-bg);
+}
+
+// Failed-image placeholder: same dimensions, subtle gradient. Preserves the
+// slot so the card doesn't reflow when a hot-linked image 404s.
+.LinkPreview-card-image--missing {
+    background: linear-gradient(135deg, var(--body-bg) 25%, var(--control-bg) 25%, var(--control-bg) 50%, var(--body-bg) 50%, var(--body-bg) 75%, var(--control-bg) 75%);
+    background-size: 8px 8px;
+    opacity: 0.4;
+}
+
+// Hide button — overlaid in top-right corner. Visible only to actors with
+// edit permission (UI gating); also gated server-side.
+.LinkPreview-card-dismiss {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--body-bg);
+    color: var(--muted-color);
+    font-size: 16px;
+    line-height: 20px;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.15s ease, background 0.15s ease;
+
+    &:hover, &:focus {
+        opacity: 1;
+        background: var(--alert-error-bg, #fee);
+        color: var(--alert-error-color, #c00);
+    }
+
+    &:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+    }
+}
+
+// Hover preview overlay — singleton appended to <body>, positioned in page
+// coordinates next to the hovered link. Shown for links whose card is not
+// inline (titled links by default, dismissed raw links).
+.LinkPreview-hovercard {
+    position: absolute;
+    z-index: 9999;
+    width: 440px;
+    max-width: calc(100vw - 16px);
+    background: var(--body-bg);
+    border: 1px solid var(--control-bg);
+    border-radius: var(--border-radius);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+    overflow: hidden;
+    animation: LinkPreview-hovercard-in 0.12s ease-out;
+
+    .LinkPreview-card {
+        border: 0;
+        border-radius: 0;
+        background: var(--body-bg);
+
+        &:hover,
+        &:focus {
+            background: var(--control-bg);
+        }
+    }
+}
+
+@keyframes LinkPreview-hovercard-in {
+    from {
+        opacity: 0;
+        transform: translateY(2px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+// Action row inside the overlay ("Show preview in post") — only rendered
+// for actors with edit permission on the post.
+.LinkPreview-hovercard-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 6px 12px;
+    border-top: 1px solid var(--control-bg);
+}
+
+// Touch-device preview trigger — a small explicit tap target rendered after
+// links whose preview is hidden (no hover on touch; the link itself must
+// keep navigating on first tap).
+.LinkPreview-previewToggle {
+    background: none;
+    border: none;
+    padding: 0 6px;
+    margin-left: 2px;
+    color: var(--muted-color);
+    font-size: 0.85em;
+    cursor: pointer;
+    vertical-align: baseline;
+
+    &:hover,
+    &:focus {
+        color: var(--link-color);
+    }
+}
+
+.LinkPreview-hovercard-pin {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--link-color);
+    cursor: pointer;
+    font-size: 0.85em;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+
+    &:hover,
+    &:focus {
+        text-decoration-style: solid;
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+}
+
+.LinkPreview-card-text {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.LinkPreview-card-site {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted-color);
+    margin-bottom: 4px;
+}
+
+// Logo self-links (forum share image): render the mark as a small favicon in
+// front of the site name instead of a full-size thumbnail — the most compact
+// treatment, matching how Slack/Discord/iMessage show logo-only links.
+.LinkPreview-card-site-favicon {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+    border-radius: 3px;
+}
+
+.LinkPreview-card-title {
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--text-color);
+    margin-bottom: 4px;
+
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-clamp: 2;
+    overflow: hidden;
+}
+
+.LinkPreview-card-desc {
+    font-size: 0.9em;
+    line-height: 1.4;
+    color: var(--muted-color);
+
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    line-clamp: 3;
+    overflow: hidden;
+}
+
+@media (max-width: 480px) {
+    .LinkPreview-card {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    // Mobile: full-width banner at the OG standard 1.91:1. Matching the source
+    // ratio means a 1200×630 og:image shows essentially uncropped, and the
+    // ratio is fixed rather than floating with the viewport width.
+    .LinkPreview-card-image {
+        width: 100%;
+        aspect-ratio: 1.91 / 1;
+    }
+}

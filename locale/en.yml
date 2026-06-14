@@ -1,0 +1,18 @@
+ekumanov-link-preview:
+  admin:
+    description: Renders OpenGraph preview cards for links in Flarum 2.0 posts. Includes a server-side fetcher with SSRF-hardened HTTP, per-post rate limits, and admin-controlled host whitelist/blacklist.
+    settings:
+      ttl_seconds: Cache TTL (seconds)
+      ttl_seconds_help: How long a fetched preview stays cached before it can be re-fetched. Default 2592000 (30 days). Lower values mean fresher previews but more outbound fetches.
+      user_rate_per_hour: New URLs per user per hour
+      user_rate_per_hour_help: Cap on how many new URL fetches one user can trigger per rolling hour. Existing cached cards aren't affected. Default 20.
+      max_urls_per_post: Max URLs per post
+      max_urls_per_post_help: How many URLs the scanner extracts from a single post body. Cards beyond this aren't generated. Default 10.
+      whitelist: Hostname whitelist
+      whitelist_help: One host per line. When set, ONLY listed hosts get cards. Subdomain wildcards like *.example.com supported; www. prefix normalized.
+      blacklist: Hostname blacklist
+      blacklist_help: One host per line. Listed hosts never get cards. Subdomain wildcards like *.example.com supported; www. prefix normalized. Applied after whitelist.
+  forum:
+    hide_preview: Hide preview
+    pin_preview: Pin preview
+    preview_aria_prefix: Link preview
