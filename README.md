@@ -6,6 +6,16 @@ the card client-side with **zero layout shift**. Links written with their own
 title get an on-hover preview instead of a full card, and authors/moderators can
 pin or dismiss any card per post.
 
+> [!IMPORTANT]
+> **A running queue worker is strongly recommended.** Link metadata is fetched
+> server-side, off the request thread. With Flarum's default `sync` queue, every
+> link you post is fetched *during* the save (up to ~10 s per URL) — slow and
+> prone to request timeouts. With a `database`/`redis` queue but **no running
+> worker**, cards never appear at all until a worker drains the jobs. Configure a
+> real queue plus a supervised `php flarum queue:work` — see [Install](#install).
+> (Links to your own forum are exempt: resolved instantly from the database, no
+> fetch.)
+
 - **Server-side, queue-backed fetching** — the post-save request never blocks on
   a remote fetch. A background worker pops the job, fetches with a hardened HTTP
   client, and the card appears on the next page load.
@@ -248,10 +258,14 @@ verify the guards.
 
 ## Future work
 
-- Per-group permission gating for who can trigger fetches.
-- A placeholder-card render path to close the realtime-update CLS edge case.
-- Optional image proxy for hot-link reliability + privacy.
-- Search reindex hook so card titles/descriptions are searchable.
+- **Graceful no-worker fallback** — when no queue worker is running, defer
+  fetches to the scheduled sweep (which runs under cron, where blocking is
+  harmless) instead of fetching inline on save, so cron-only hosts get cards
+  without slowing down posting. Removes the queue-worker requirement above.
+- **Per-group permission gating** for who can trigger fetches.
+- A **placeholder-card render path** to close the realtime-update CLS edge case.
+- **Optional image proxy** for hot-link reliability + privacy.
+- **Search reindex hook** so card titles/descriptions are searchable.
 
 ## License
 
