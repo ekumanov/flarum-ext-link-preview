@@ -68,7 +68,7 @@ function processPreviews(commentPost) {
 
 function computeSig(list) {
     return list
-        .map((e) => `${e.url}|${e.dismissed ? 'd' : ''}${e.pinned ? 'p' : ''}${e.canToggle ? 'm' : ''}`)
+        .map((e) => `${e.url}|${e.pending ? 'P' : ''}${e.dismissed ? 'd' : ''}${e.pinned ? 'p' : ''}${e.canToggle ? 'm' : ''}`)
         .join('\n');
 }
 
@@ -135,7 +135,10 @@ function renderBody(body, list) {
 
         if (visible) {
             at.parentNode.insertBefore(buildWrapper(preview, body), at.nextSibling);
-        } else if (!POINTER_HOVERS) {
+        } else if (!POINTER_HOVERS && !preview.pending) {
+            // A pending preview has nothing to show yet — no tap target until the
+            // fetch lands. (A pending RAW link instead gets an inline skeleton
+            // via the `visible` branch above.)
             // Touch devices have no hover, and hijacking the link's first tap
             // is the classic iOS double-tap anti-pattern (links must navigate
             // on first tap). Instead: a small explicit tap target after the
@@ -206,6 +209,15 @@ function buildWrapper(preview, body) {
     wrapper.className = WRAPPER_CLASS;
     wrapper.dataset.lpUrl = preview.url;
 
+    if (preview.pending) {
+        // Not fetched yet — reserve the card's footprint with a fixed-size
+        // skeleton so the real card (or its removal, if the fetch yields
+        // nothing usable) doesn't shift the content below. No toggle controls
+        // until the card materializes.
+        wrapper.appendChild(buildSkeleton());
+        return wrapper;
+    }
+
     wrapper.appendChild(buildCard(preview));
 
     if (preview.canToggle) {
@@ -213,6 +225,30 @@ function buildWrapper(preview, body) {
     }
 
     return wrapper;
+}
+
+// Loading placeholder that mirrors the card's layout (side thumbnail + stacked
+// text lines) so its height closely matches the real card it will become.
+function buildSkeleton() {
+    const card = document.createElement('div');
+    card.className = CARD_CLASS + ' ' + CARD_CLASS + '--skeleton';
+    card.setAttribute('aria-hidden', 'true'); // decorative; SR users skip it
+
+    const img = document.createElement('div');
+    img.className = CARD_CLASS + '-image ' + CARD_CLASS + '-image--skeleton';
+    card.appendChild(img);
+
+    const text = document.createElement('div');
+    text.className = CARD_CLASS + '-text';
+    for (const width of ['38%', '92%', '70%']) {
+        const line = document.createElement('div');
+        line.className = 'LinkPreview-skeleton-line';
+        line.style.width = width;
+        text.appendChild(line);
+    }
+    card.appendChild(text);
+
+    return card;
 }
 
 function buildCard(preview) {
@@ -355,6 +391,7 @@ function bindHover(anchor) {
     anchor.addEventListener('mouseenter', () => {
         const reg = anchorRegistry.get(anchor);
         if (!reg) return;
+        if (reg.preview.pending) return; // not fetched yet — nothing to preview
         // Inline card directly after the link → nothing to preview.
         const next = anchor.nextElementSibling;
         if (next && next.classList.contains(WRAPPER_CLASS)) return;

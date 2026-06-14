@@ -32,8 +32,13 @@ return [
                 ->belongsToMany(Preview::class, 'ekumanov_link_preview_post', 'post_id', 'preview_id')
                 ->withPivot('dismissed_at', 'pinned_at')
                 ->wherePivot('is_link', 1)
-                ->where('http_status', 200)
-                ->whereNull('error');
+                ->whereNull('error')
+                // Successfully fetched (http_status 200), OR still pending
+                // (retrieved_at NULL) — the front-end renders a fixed-size
+                // skeleton for pending rows so the card slot is reserved before
+                // the fetch lands. Hard failures (non-200 with a retrieved_at)
+                // stay excluded.
+                ->where(fn ($q) => $q->where('http_status', 200)->orWhereNull('retrieved_at'));
         }),
 
     (new Extend\ApiResource(Resource\PostResource::class))

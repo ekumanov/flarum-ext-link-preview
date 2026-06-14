@@ -12,6 +12,7 @@ use Flarum\Post\Event\Posted;
 use Flarum\Post\Event\Revised;
 use Illuminate\Contracts\Queue\Queue;
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Queue\SyncQueue;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
@@ -134,6 +135,15 @@ final class ScanPostUrls
                         $preview->error = 'self_link_not_viewable';
                     }
                     $preview->save();
+                } elseif ($this->queue instanceof SyncQueue) {
+                    // No async worker present: a sync queue runs the job inline,
+                    // which would block this post-save request on the remote
+                    // fetch. Leave the placeholder row (retrieved_at NULL) for
+                    // the scheduled sweep to re-dispatch from cron, where a
+                    // blocking fetch is harmless. Needs `php flarum schedule:run`
+                    // on cron; the card appears within a few minutes (the
+                    // front-end holds its place with a skeleton meanwhile).
+                    continue;
                 } else {
                     $this->queue->push(new FetchPreviewJob($preview->id));
                 }

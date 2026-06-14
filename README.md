@@ -7,14 +7,19 @@ title get an on-hover preview instead of a full card, and authors/moderators can
 pin or dismiss any card per post.
 
 > [!IMPORTANT]
-> **A running queue worker is strongly recommended.** Link metadata is fetched
-> server-side, off the request thread. With Flarum's default `sync` queue, every
-> link you post is fetched *during* the save (up to ~10 s per URL) — slow and
-> prone to request timeouts. With a `database`/`redis` queue but **no running
-> worker**, cards never appear at all until a worker drains the jobs. Configure a
-> real queue plus a supervised `php flarum queue:work` — see [Install](#install).
-> (Links to your own forum are exempt: resolved instantly from the database, no
-> fetch.)
+> **You need a queue worker _or_ cron.** Link metadata is fetched server-side,
+> off the request thread:
+> - **Queue worker** (recommended) — a real `redis`/`database` queue with a
+>   supervised `php flarum queue:work` fetches cards within seconds.
+> - **Cron only** — on Flarum's default `sync` queue (no worker) the fetch is
+>   *not* run inline (that would block the save); it's deferred to the 5-minute
+>   scheduled sweep, so all you need is `php flarum schedule:run` on cron. Cards
+>   appear within a few minutes — a fixed-size skeleton holds their place until
+>   then, so there's no layout shift.
+> - **Neither** — external-link cards won't appear. (Links to your own forum
+>   still work — resolved instantly from the DB.)
+>
+> See [Install](#install).
 
 - **Server-side, queue-backed fetching** — the post-save request never blocks on
   a remote fetch. A background worker pops the job, fetches with a hardened HTTP
@@ -161,6 +166,12 @@ Image loading doesn't reflow the card (the slot is reserved by CSS). An image
 that 404s swaps to a same-dimension placeholder instead of being removed — the
 card stays exactly as wide and tall as it was.
 
+A card that's still being fetched renders as a **fixed-size skeleton** in the
+same slot, so when the real card lands — on the next page load, the author's
+first paint after saving, or a live `flarum/realtime` update — it fills the
+reserved space without shifting the content below. (A fetch that ultimately
+yields nothing usable removes the skeleton — a comparatively rare upward shift.)
+
 ## Install
 
 ```bash
@@ -169,17 +180,21 @@ php flarum migrate
 php flarum cache:clear
 ```
 
-### Queue worker required
+### Queue worker or cron
 
-This extension dispatches background jobs. Flarum's default queue driver is
-`sync` (run inline in the request thread), which **defeats the entire async
-design**. Configure a real queue:
+This extension fetches link metadata in the background. Two supported setups:
 
-- **Redis** via [`fof/redis`](https://github.com/FriendsOfFlarum/redis), with
-  `php flarum queue:work` running as a supervised daemon — recommended.
-- **Database** queue works too (slower, but no Redis dependency).
+- **A real queue + worker (recommended)** — Redis via
+  [`fof/redis`](https://github.com/FriendsOfFlarum/redis) (or the database
+  queue), with `php flarum queue:work` running as a supervised daemon. Cards
+  appear within seconds.
+- **Cron only** — on Flarum's default `sync` queue the extension detects there's
+  no worker and does **not** fetch inline (that would block the post-save). It
+  defers to the 5-minute scheduled sweep instead, so you only need
+  `php flarum schedule:run` on cron (below). Cards appear within a few minutes.
 
-If the queue stays `sync`, the post-save request will hang on the fetch.
+With neither a worker nor cron, external-link cards won't appear (self-links
+still resolve instantly from the DB).
 
 ### Scheduler
 
@@ -189,8 +204,9 @@ The 5-minute sweep needs `php flarum schedule:run` on a system cron:
 * * * * * cd /path/to/flarum && php flarum schedule:run >> /dev/null 2>&1
 ```
 
-Without it the sweep won't fire — but it's only a fallback for dropped jobs, so a
-forum without it just loses the safety net.
+On a worker-backed queue the sweep is just a safety net (re-dispatches dropped
+fetch jobs). On the cron-only (`sync`) setup it's the *primary* fetch path, so
+cron is required there.
 
 ## Configuration
 
@@ -258,14 +274,13 @@ verify the guards.
 
 ## Future work
 
-- **Graceful no-worker fallback** — when no queue worker is running, defer
-  fetches to the scheduled sweep (which runs under cron, where blocking is
-  harmless) instead of fetching inline on save, so cron-only hosts get cards
-  without slowing down posting. Removes the queue-worker requirement above.
-- **Per-group permission gating** for who can trigger fetches.
-- A **placeholder-card render path** to close the realtime-update CLS edge case.
-- **Optional image proxy** for hot-link reliability + privacy.
-- **Search reindex hook** so card titles/descriptions are searchable.
+- **Per-group permission gating** for which user groups may trigger server-side
+  fetches (today any authenticated author can, bounded only by the per-user rate
+  limit, per-post URL cap, and the SSRF guards).
+- **Optional image proxy** — serve card thumbnails from the forum's own domain
+  instead of hot-linking, for reliability and to avoid leaking readers' IPs to
+  third-party image hosts.
+- **Search reindex hook** so fetched card titles/descriptions are searchable.
 
 ## License
 

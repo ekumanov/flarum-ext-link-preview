@@ -52,6 +52,55 @@
     opacity: 0.4;
 }
 
+// Pending-fetch skeleton — reserves the card's footprint (same thumbnail slot +
+// stacked text lines) so the real card, or its removal, doesn't shift content
+// below it. Inert: no hover state, no pointer events.
+.LinkPreview-card--skeleton {
+    cursor: default;
+
+    &:hover,
+    &:focus {
+        background: var(--control-bg);
+        border-color: var(--control-bg);
+    }
+}
+
+.LinkPreview-card-image--skeleton,
+.LinkPreview-skeleton-line {
+    background: linear-gradient(90deg, var(--control-bg) 25%, var(--body-bg) 37%, var(--control-bg) 63%);
+    background-size: 400% 100%;
+    animation: LinkPreview-shimmer 1.4s ease infinite;
+}
+
+.LinkPreview-skeleton-line {
+    height: 12px;
+    margin-bottom: 9px;
+    border-radius: calc(var(--border-radius) * 0.5);
+
+    // The first line stands in for the smaller uppercase site name.
+    &:first-child {
+        height: 9px;
+        margin-bottom: 11px;
+    }
+
+    &:last-child {
+        margin-bottom: 2px;
+    }
+}
+
+@keyframes LinkPreview-shimmer {
+    from { background-position: 100% 0; }
+    to { background-position: 0 0; }
+}
+
+// Respect reduced-motion: hold a static placeholder instead of shimmering.
+@media (prefers-reduced-motion: reduce) {
+    .LinkPreview-card-image--skeleton,
+    .LinkPreview-skeleton-line {
+        animation: none;
+    }
+}
+
 // Hide button — overlaid in top-right corner. Visible only to actors with
 // edit permission (UI gating); also gated server-side.
 .LinkPreview-card-dismiss {

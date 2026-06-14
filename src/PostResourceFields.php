@@ -2,6 +2,7 @@
 
 namespace Ekumanov\LinkPreview;
 
+use Carbon\Carbon;
 use Flarum\Api\Context;
 use Flarum\Api\Schema;
 use Flarum\Post\Post;
@@ -67,6 +68,31 @@ class PostResourceFields
         // these flags plus how the link is written in the body.
         $dismissed = $preview->pivot && $preview->pivot->dismissed_at !== null;
         $pinned = $preview->pivot && $preview->pivot->pinned_at !== null;
+
+        // Pending: the row exists but the fetch hasn't completed (no error yet,
+        // retrieved_at still NULL). Emit a lightweight marker so the front-end
+        // reserves the card's footprint with a fixed-size skeleton — this closes
+        // the layout shift when a card lands after the post is already on screen
+        // (a realtime update, or the author's own first paint before the worker
+        // finishes). A stale-pending row — a fetch that never ran because the
+        // forum has neither a worker nor cron — stops skeletoning after an hour,
+        // so a misconfigured forum degrades to "no card" rather than a permanent
+        // skeleton.
+        if ($preview->retrieved_at === null && $preview->error === null) {
+            if (Carbon::parse($preview->created_at)->lt(Carbon::now()->subHour())) {
+                return null;
+            }
+
+            return [
+                'previewId' => (int) $preview->id,
+                'postId' => (int) $post->id,
+                'url' => $preview->url,
+                'pending' => true,
+                'dismissed' => $dismissed,
+                'pinned' => $pinned,
+                'canToggle' => $canToggle,
+            ];
+        }
 
         $og = $preview->opengraph ?: [];
         $fallback = $preview->fallback ?: [];
