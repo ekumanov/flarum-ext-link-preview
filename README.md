@@ -72,7 +72,10 @@ POST /api/posts (synchronous)                       Background worker
 The post-save request thread never blocks on a remote fetch. If the queue is
 backed up or a worker is down, posts still go in immediately; cards just appear
 later as the worker drains. A scheduler sweep (5-minute interval) re-dispatches
-any rows whose job was lost.
+any rows whose job was lost — and on the default `sync` queue (no worker) that
+same sweep is the *primary* fetcher: the listener writes the placeholder row but
+leaves the actual fetch for the sweep, so it never blocks the save. See
+[Background fetching](#background-fetching-queue-worker-or-cron).
 
 ### What this does NOT do (intentional)
 
@@ -176,37 +179,75 @@ yields nothing usable removes the skeleton — a comparatively rare upward shift
 
 ```bash
 composer require ekumanov/flarum-ext-link-preview
-php flarum migrate
-php flarum cache:clear
 ```
 
-### Queue worker or cron
+Then enable **Link Preview** in **Admin → Extensions**. Enabling runs the
+extension's migration and creates its tables for you — there's no separate
+`php flarum migrate` step on a fresh install.
 
-This extension fetches link metadata in the background. Two supported setups:
+### Background fetching: queue worker or cron
 
-- **A real queue + worker (recommended)** — Redis via
-  [`fof/redis`](https://github.com/FriendsOfFlarum/redis) (or the database
-  queue), with `php flarum queue:work` running as a supervised daemon. Cards
-  appear within seconds.
-- **Cron only** — on Flarum's default `sync` queue the extension detects there's
-  no worker and does **not** fetch inline (that would block the post-save). It
-  defers to the 5-minute scheduled sweep instead, so you only need
-  `php flarum schedule:run` on cron (below). Cards appear within a few minutes.
+Preview metadata is fetched **in the background**. When a link is posted the
+forum has to reach out to that other website, which can take a few seconds, so
+the fetch happens *after* the post is saved rather than making the author wait —
+the card then appears a moment later. Two pieces make that work:
 
-With neither a worker nor cron, external-link cards won't appear (self-links
-still resolve instantly from the DB).
+- a **queue** — the to-do list of links waiting to be fetched, and
+- a **worker** — something that works through that list and does the fetching.
+
+Flarum can provide those in a couple of ways; pick whichever fits your forum:
+
+- **A real queue + worker (recommended for busier forums)** — Redis via
+  [`fof/redis`](https://github.com/FriendsOfFlarum/redis) (or the `database`
+  queue), with `php flarum queue:work` running as a supervised daemon.
+  *Supervisor* just keeps that worker process alive (restarts it if it stops);
+  the worker itself loops continuously and fetches each link a second or two
+  after it's posted.
+- **Just cron (works on any forum, including the default `sync` queue)** — every
+  Flarum site is meant to run `php flarum schedule:run` once a minute (its
+  *scheduler*; see below). This extension hooks a task into that scheduler that,
+  every 5 minutes, finds links not yet fetched and fetches them. So with **no
+  worker at all** the single cron line is enough — cards just take a few minutes
+  instead of seconds. (On `sync`, fetching inline would block the post-save, so
+  the extension deliberately leaves the fetch for this sweep — see
+  [How it works](#how-it-works).)
+
+With neither a worker nor cron, external-link cards won't appear. Links to your
+own forum still work either way — those are read straight from your database, no
+fetching needed.
 
 ### Scheduler
 
-The 5-minute sweep needs `php flarum schedule:run` on a system cron:
+Flarum's **scheduler** runs *recurring* tasks on a clock (this is separate from
+the *queue*, which carries one-off background jobs). It's driven by a single
+system-cron line you most likely already have:
 
 ```cron
 * * * * * cd /path/to/flarum && php flarum schedule:run >> /dev/null 2>&1
 ```
 
-On a worker-backed queue the sweep is just a safety net (re-dispatches dropped
-fetch jobs). On the cron-only (`sync`) setup it's the *primary* fetch path, so
-cron is required there.
+This extension's 5-minute sweep runs on that scheduler. On a worker-backed queue
+the sweep is only a safety net (it re-dispatches any fetch job that got dropped —
+worker restart, Redis flush, etc.); on the cron-only (`sync`) setup it's the
+*primary* fetch path, so the cron line is required there.
+
+> On the **database** queue driver, Flarum itself uses this same scheduler to
+> run the worker (`queue:work --stop-when-empty`) every minute — so the one cron
+> line doubles as your queue worker, with no Supervisor needed. Redis queues
+> aren't auto-scheduled; they need their own supervised daemon.
+
+## Update
+
+```bash
+composer update ekumanov/flarum-ext-link-preview
+php flarum migrate
+php flarum cache:clear
+```
+
+Unlike a fresh install, an update **does** need `php flarum migrate` — it
+applies any new schema the new version introduces (a harmless no-op when there's
+none). `php flarum cache:clear` then drops stale compiled assets so the new
+front-end is served.
 
 ## Configuration
 
