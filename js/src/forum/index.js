@@ -178,12 +178,59 @@ function buildPreviewToggle(preview, body, anchor) {
  * "titled" and defaults to hover-only.
  */
 function isRawLink(anchor) {
+    if (isRelabelledDiscussionLink(anchor)) return true;
+
     const href = (anchor.getAttribute('href') || '').trim();
     const text = (anchor.textContent || '').trim();
     if (!href || !text) return false;
     if (text === href) return true;
     const norm = (s) => s.replace(/^https?:\/\//i, '').replace(/\/$/, '');
     return norm(text) === norm(href);
+}
+
+/**
+ * A bare-pasted link to a discussion on this same forum no longer *reads* as a
+ * URL: since core 2.0.0-rc.6 (flarum/framework#4924) the formatter replaces its
+ * text with a `#123` label — favicon, discussion id, and the post number when
+ * the link named a reply. Comparing text to href therefore says "titled" about
+ * a link the writer pasted bare, and self-links quietly lost their cards.
+ *
+ * Core applies this class in exactly the case we mean by "raw": the template
+ * branches on `@discussionid and string(.) = @url`, so a link the writer gave
+ * their own words keeps them and gets only `UrlLink--internal`. The composer
+ * preview mirrors the same rule client-side in `labelDiscussionLinks`.
+ *
+ * Checked before the text comparison because that comparison cannot work here
+ * — the address is gone from the DOM, and the label is all that is left.
+ */
+function isRelabelledDiscussionLink(anchor) {
+    return anchor.classList.contains('UrlLink--discussion');
+}
+
+/**
+ * Does this URL point back at this forum?
+ *
+ * Mirrors the test core makes in `labelDiscussionLinks`: same origin, and
+ * within the forum's base path when it is installed in a subdirectory. Read
+ * off the URL rather than off a class, because the card we build is our own
+ * element and carries no marker from the server.
+ */
+function isInternalUrl(href) {
+    let url;
+
+    try {
+        url = new URL(href, document.baseURI);
+    } catch {
+        return false;
+    }
+
+    if (url.origin !== window.location.origin) return false;
+
+    const basePath = (app.forum && app.forum.attribute('basePath')) || '';
+
+    if (!basePath) return true;
+
+    return url.pathname === basePath || url.pathname.startsWith(basePath + '/');
 }
 
 function findAnchor(body, url) {
@@ -255,8 +302,22 @@ function buildCard(preview) {
     const card = document.createElement('a');
     card.className = CARD_CLASS;
     card.href = preview.finalUrl || preview.url;
-    card.target = '_blank';
-    card.rel = 'nofollow noopener noreferrer';
+
+    // A card for a link back to this forum is still a link back to this forum,
+    // so it gets what core gives the plain link it stands beside: the same tab,
+    // no `nofollow` telling search engines to ignore the forum's own internal
+    // linking, and the marker class that lets core route the click through the
+    // running application instead of tearing it down and booting it again.
+    // `UrlLink`/`UrlLink--internal` carry no styling of their own — they are
+    // only the marker `routeInternalLinks()` looks for.
+    if (isInternalUrl(card.href)) {
+        card.className += ' UrlLink UrlLink--internal';
+        card.target = '_self';
+        card.rel = 'noopener';
+    } else {
+        card.target = '_blank';
+        card.rel = 'nofollow noopener noreferrer';
+    }
 
     // Screen readers: collapse the multi-div content into a single descriptive
     // accessible name. Without this they announce site / title / desc as three
@@ -515,7 +576,12 @@ function bindGlobalHoverHandlers() {
         'click',
         (e) => {
             const onToggle = e.target.closest && e.target.closest('.' + TOGGLE_CLASS);
-            if (hoverEl && !hoverEl.contains(e.target) && !onToggle) hideHover();
+            // A card that opens in this tab takes the page with it, so the
+            // overlay has to go too — it is positioned against an anchor that
+            // is about to be replaced. Cards opening a new tab leave this page
+            // standing, and the overlay with it.
+            const leavingCard = e.target.closest && e.target.closest('.' + CARD_CLASS + '[target="_self"]');
+            if (hoverEl && (!hoverEl.contains(e.target) || leavingCard) && !onToggle) hideHover();
         },
         true
     );

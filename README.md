@@ -138,7 +138,13 @@ moderator/admin:
 
 Detection is DOM-based (anchor text vs `href`), so every authoring syntax is
 covered without storing anything; the two overrides live in `dismissed_at` /
-`pinned_at` on the pivot table (mutually exclusive). Hover previews are shown to
+`pinned_at` on the pivot table (mutually exclusive). Links back to your own
+forum are the one case where the text is not the address even though it was
+pasted bare: since Flarum 2.0.0-rc.6 the formatter shows those as a `#123`
+label. Core marks exactly that case with `UrlLink--discussion`, which is read
+as "raw", so a pasted discussion link gets its inline card like any other —
+and a card pointing back at the forum opens in the same tab, without
+`nofollow`, routed by the running application rather than reloading it. Hover previews are shown to
 all readers — a "hidden" card de-emphasizes, it doesn't censor.
 
 On touch devices there is no hover, and hijacking a link's first tap is the
