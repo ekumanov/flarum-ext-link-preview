@@ -23,14 +23,26 @@ namespace Ekumanov\LinkPreview\Http;
  */
 final class CurlRequestExecutor implements RequestExecutor
 {
+    /**
+     * Plain desktop Chrome. Measured 2026-09-01 against the 54 hosts that were
+     * blocking this fetcher on pianoclack: the previous
+     * 'Mozilla/5.0 (compatible; FlarumLinkPreview/1.0) Chrome/126.0.0.0' was
+     * rejected outright by CDN bot rules (SiteGround, Fastly and friends read
+     * the "compatible;" shape as a crawler), while this string is accepted.
+     * Adding realistic Accept / Sec-Fetch-* headers on top recovered exactly
+     * zero further hosts, so we don't bother — what remains is IP-reputation
+     * and TLS-fingerprint blocking, which no header can talk its way past.
+     */
+    public const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
     public function __construct(
         private readonly int $connectTimeoutSec = 5,
         private readonly int $totalTimeoutSec = 10,
         private readonly int $maxBytes = 2097152,
-        private readonly string $userAgent = 'Mozilla/5.0 (compatible; FlarumLinkPreview/1.0)',
+        private readonly string $userAgent = self::DEFAULT_USER_AGENT,
     ) {}
 
-    public function execute(string $url, string $pinnedHost, string $pinnedIp, int $port): ExecutorResult
+    public function execute(string $url, string $pinnedHost, string $pinnedIp, int $port, ?string $userAgent = null): ExecutorResult
     {
         $ch = curl_init();
         if ($ch === false) {
@@ -52,7 +64,7 @@ final class CurlRequestExecutor implements RequestExecutor
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_CONNECTTIMEOUT => $this->connectTimeoutSec,
             CURLOPT_TIMEOUT => $this->totalTimeoutSec,
-            CURLOPT_USERAGENT => $this->userAgent,
+            CURLOPT_USERAGENT => $userAgent ?? $this->userAgent,
             CURLOPT_HTTPHEADER => [
                 'Accept: text/html, application/xhtml+xml; q=0.9, */*; q=0.1',
                 'Accept-Language: en;q=0.9,*;q=0.5',

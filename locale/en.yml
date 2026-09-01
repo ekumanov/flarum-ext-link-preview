@@ -10,6 +10,14 @@ ekumanov-link-preview:
       max_urls_per_post_help: How many URLs the scanner extracts from a single post body. Cards beyond this aren't generated. Default 10.
       whitelist: Hostname whitelist
       whitelist_help: One host per line. When set, ONLY listed hosts get cards. Subdomain wildcards like *.example.com supported; www. prefix normalized.
+      user_agents: Fetcher identities
+      user_agents_help: >
+        One User-Agent per line, most preferred first. The first is used for every
+        fetch; the rest are only tried when a site answers with a block (401, 403,
+        406, 429). Leave empty for the built-in chain: desktop Chrome, then the two
+        social-scraper identities, which many sites allowlist specifically so link
+        previews work. Put a single line here if you would rather the fetcher only
+        ever present as itself.
       blacklist: Hostname blacklist
       blacklist_help: One host per line. Listed hosts never get cards. Subdomain wildcards like *.example.com supported; www. prefix normalized. Applied after whitelist.
   forum:

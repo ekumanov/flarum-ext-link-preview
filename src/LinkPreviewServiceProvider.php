@@ -11,6 +11,7 @@ use Ekumanov\LinkPreview\Http\Resolver;
 use Ekumanov\LinkPreview\Http\SafeHttpClient;
 use Ekumanov\LinkPreview\Http\UrlValidator;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
+use Ekumanov\LinkPreview\Settings\SettingsRepository;
 use Flarum\Foundation\AbstractServiceProvider;
 use Flarum\Foundation\Config;
 use Flarum\Settings\SettingsRepositoryInterface;
@@ -32,20 +33,18 @@ class LinkPreviewServiceProvider extends AbstractServiceProvider
             connectTimeoutSec: 5,
             totalTimeoutSec: 10,
             maxBytes: 2 * 1024 * 1024,
-            // Many sites (and Cloudflare in front of them) refuse non-browser UAs
-            // outright. We pose as a recent Chrome — same shape as what facebookexternalhit,
-            // Slack, Discord etc. send, just without their bot identifier so we
-            // don't get treated as one. The "FlarumLinkPreview" token is for op
-            // visibility in source-site logs; CF challenges accept it.
-            userAgent: 'Mozilla/5.0 (compatible; FlarumLinkPreview/1.0) Chrome/126.0.0.0',
         ));
 
+        // The identity chain lives on the client, not the executor: a bot-block
+        // re-try has to re-run validation and redirects too, so it belongs one
+        // layer up. See SettingsRepository::userAgents() for what's in it.
         $this->container->singleton(SafeHttpClient::class, fn ($c) => new SafeHttpClient(
             urlValidator: $c->make(UrlValidator::class),
             resolver: $c->make(Resolver::class),
             ipFilter: $c->make(IpFilter::class),
             executor: $c->make(RequestExecutor::class),
             maxRedirects: 5,
+            userAgents: $c->make(SettingsRepository::class)->userAgents(),
         ));
 
         // Self-link short-circuit. Base URL is computed once from Flarum's

@@ -4,7 +4,9 @@ namespace Ekumanov\LinkPreview\Job;
 
 use Carbon\Carbon;
 use Ekumanov\LinkPreview\Preview;
+use Ekumanov\LinkPreview\Fetch\FailurePolicy;
 use Ekumanov\LinkPreview\Http\SafeHttpClient;
+use Ekumanov\LinkPreview\Listener\UrlExtractor;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
 use Ekumanov\LinkPreview\Parser\HtmlFallbackParser;
 use Ekumanov\LinkPreview\Parser\OpenGraphParser;
@@ -59,11 +61,24 @@ class FetchPreviewJob extends AbstractJob
             }
         }
 
+        // Media we could never build a card from (audio, video, images,
+        // archives). Extraction skips these, but rows created before the list
+        // grew still exist and must not be re-fetched — downloading a 2 MB mp3
+        // to find no HTML in it is the most expensive way to learn nothing.
+        if (UrlExtractor::isNonFetchableMedia($preview->url)) {
+            $preview->retrieved_at = Carbon::now();
+            $preview->http_status = 0;
+            $preview->error = 'media_url: no HTML to parse';
+            $preview->save();
+            return;
+        }
+
         // Self-link short-circuit — same as ScanPostUrls, but also catches
-        // backfill / sweep dispatches where the listener never ran. If the
-        // URL is self-shaped, it NEVER goes to HTTP — succeed locally or
-        // record a permanent failure.
-        if ($localResolver->parseSelfLink($preview->url) !== null) {
+        // backfill / sweep dispatches where the listener never ran. Anything
+        // on our own host NEVER goes to HTTP: succeed locally, or record a
+        // permanent failure. Fetching our own public hostname from our own
+        // server is what Cloudflare answers with a challenge.
+        if ($localResolver->isSelfHost($preview->url)) {
             $local = $localResolver->resolve($preview->url);
             $preview->retrieved_at = Carbon::now();
             if ($local !== null) {
@@ -79,6 +94,7 @@ class FetchPreviewJob extends AbstractJob
                 $preview->api_resource = null;
                 $preview->mime = null;
                 $preview->exif = null;
+                $preview->fetch_attempts = 0;
             } else {
                 $preview->http_status = 0;
                 $preview->error = 'self_link_not_viewable';
@@ -98,6 +114,7 @@ class FetchPreviewJob extends AbstractJob
             ]);
             $preview->retrieved_at = Carbon::now();
             $preview->error = substr('exception: '.$e->getMessage(), 0, 255);
+            $preview->fetch_attempts = (int) $preview->fetch_attempts + 1;
             $preview->save();
             return;
         }
@@ -107,13 +124,27 @@ class FetchPreviewJob extends AbstractJob
         if (! $result['ok']) {
             $preview->http_status = 0;
             $preview->error = substr($result['reason'].': '.$result['detail'], 0, 255);
+            $preview->fetch_attempts = (int) $preview->fetch_attempts + 1;
             $preview->save();
             return;
         }
 
         $preview->http_status = $result['status'];
         $preview->final_url = $result['finalUrl'];
+
+        // A non-2xx is a FAILED fetch, not a page with no metadata. Recording
+        // it as an error is what lets link-preview:retry-failed find it later,
+        // and what keeps a WAF block distinguishable from a site that simply
+        // has no OpenGraph tags.
+        if ($result['status'] < 200 || $result['status'] >= 300) {
+            $preview->error = FailurePolicy::httpError($result['status']);
+            $preview->fetch_attempts = (int) $preview->fetch_attempts + 1;
+            $preview->save();
+            return;
+        }
+
         $preview->error = null;
+        $preview->fetch_attempts = 0;
 
         // Only parse HTML bodies — anything else (PDF, JSON, image MIME, etc.)
         // we record the status but leave metadata empty. The display layer

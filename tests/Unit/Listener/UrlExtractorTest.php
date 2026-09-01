@@ -7,6 +7,7 @@ use Ekumanov\LinkPreview\Listener\UrlExtractor;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
 use Ekumanov\LinkPreview\Settings\SettingsRepository;
 use Flarum\Settings\SettingsRepositoryInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class UrlExtractorTest extends TestCase
@@ -280,5 +281,40 @@ final class InMemorySettings implements SettingsRepositoryInterface
     {
         // Real Flarum supports SQL LIKE patterns; tests don't need that.
         unset($this->values[$keyLike]);
+    }
+
+    // --- non-fetchable media --------------------------------------------
+
+    #[DataProvider('mediaUrlProvider')]
+    public function test_non_fetchable_media_detection(string $url, bool $expected): void
+    {
+        $this->assertSame($expected, UrlExtractor::isNonFetchableMedia($url));
+    }
+
+    public static function mediaUrlProvider(): array
+    {
+        return [
+            // Forum attachments: fetching these downloaded megabytes of audio
+            // to discover there was no HTML in it.
+            'mp3 attachment'  => ['https://bucket.s3.amazonaws.com/2026-08-30/x-716786.mp3', true],
+            'wav attachment'  => ['https://bucket.s3.amazonaws.com/a.wav', true],
+            'flac attachment' => ['https://bucket.s3.amazonaws.com/a.flac', true],
+            // .tif blew the 2 MB byte cap rather than parsing as an image.
+            'tif'             => ['https://example.com/scan.tif', true],
+            'heic'            => ['https://example.com/photo.heic', true],
+            'jpg'             => ['https://example.com/photo.jpg', true],
+            'video'           => ['https://example.com/clip.mp4', true],
+            'zip'             => ['https://example.com/bundle.zip', true],
+            'uppercase'       => ['https://example.com/LOUD.MP3', true],
+            'query string'    => ['https://example.com/a.mp3?token=abc', true],
+
+            // Not media — these must still be fetched.
+            'html page'       => ['https://example.com/article', false],
+            'trailing slash'  => ['https://example.com/article/', false],
+            // Deliberately not skipped: some sites serve HTML from a .pdf path.
+            'pdf'             => ['https://example.com/paper.pdf', false],
+            'mp3 in hostname' => ['https://mp3.example.com/article', false],
+            'mp3 in query'    => ['https://example.com/search?q=song.mp3', false],
+        ];
     }
 }

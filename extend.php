@@ -4,6 +4,7 @@ use Ekumanov\LinkPreview\Api\Controller\DismissPreviewController;
 use Ekumanov\LinkPreview\Api\Controller\PinPreviewController;
 use Ekumanov\LinkPreview\Console\BackfillPreviewsCommand;
 use Ekumanov\LinkPreview\Console\RefreshSelfLinksCommand;
+use Ekumanov\LinkPreview\Console\RetryFailedPreviewsCommand;
 use Ekumanov\LinkPreview\Console\SweepStuckPreviewsCommand;
 use Ekumanov\LinkPreview\Preview;
 use Ekumanov\LinkPreview\Listener\ScanPostUrls;
@@ -100,7 +101,13 @@ return [
         ->command(SweepStuckPreviewsCommand::class)
         ->command(BackfillPreviewsCommand::class)
         ->command(RefreshSelfLinksCommand::class)
+        ->command(RetryFailedPreviewsCommand::class)
         ->schedule(SweepStuckPreviewsCommand::class, function (ScheduleEvent $event) {
             $event->everyFiveMinutes()->withoutOverlapping();
+        })
+        // Hourly, but each row carries its own backoff (1h → 30d), so a site
+        // that keeps blocking us is not hit hourly — see FailurePolicy.
+        ->schedule(RetryFailedPreviewsCommand::class, function (ScheduleEvent $event) {
+            $event->hourly()->withoutOverlapping();
         }),
 ];

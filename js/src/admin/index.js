@@ -39,6 +39,15 @@ app.initializers.add('ekumanov/link-preview', () => {
     });
 
     reg.registerSetting({
+        setting: 'ekumanov-link-preview.user_agents',
+        type: 'textarea',
+        label: app.translator.trans('ekumanov-link-preview.admin.settings.user_agents'),
+        help: app.translator.trans('ekumanov-link-preview.admin.settings.user_agents_help'),
+        placeholder:
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36\nTwitterbot/1.0\nfacebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+    });
+
+    reg.registerSetting({
         setting: 'ekumanov-link-preview.blacklist',
         type: 'textarea',
         label: app.translator.trans('ekumanov-link-preview.admin.settings.blacklist'),

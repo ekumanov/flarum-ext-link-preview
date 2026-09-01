@@ -27,6 +27,15 @@ namespace Ekumanov\LinkPreview\Http;
  *   - 'ssrf_private_ip': host resolved to a non-public address
  *   - 'dns_failed':      no A/AAAA records
  *   - 'too_many_redirects'
+ *
+ * User-Agent fallback: a great many sites answer an unrecognised client with a
+ * bot-block status rather than content. When the first identity gets one of
+ * those, we re-run the *whole* chain (validation, DNS, redirects included)
+ * under the next configured User-Agent and keep the first non-blocked answer.
+ * Measured on pianoclack's 54 blocked hosts: plain Chrome recovers 3, and the
+ * social-scraper identities recover 5 more that Chrome cannot — the sets are
+ * disjoint, which is why this is a chain and not a single better string.
+ * The retry only fires on a block, so ordinary fetches still cost one request.
  */
 final class SafeHttpClient
 {
@@ -34,12 +43,28 @@ final class SafeHttpClient
     public const REASON_DNS_FAILED = 'dns_failed';
     public const REASON_TOO_MANY_REDIRECTS = 'too_many_redirects';
 
+    /**
+     * Statuses that mean "we don't like the look of you" rather than "this
+     * resource is not here". Only these trigger a User-Agent re-try: a 404
+     * stays a 404 no matter who asks, and re-trying it would just double the
+     * traffic we aim at sites that already told us no.
+     */
+    public const BOT_BLOCK_STATUSES = [401, 403, 406, 429];
+
     public function __construct(
         private readonly UrlValidator $urlValidator,
         private readonly Resolver $resolver,
         private readonly IpFilter $ipFilter,
         private readonly RequestExecutor $executor,
         private readonly int $maxRedirects = 5,
+        /**
+         * Identities to try, in order. The first is used for every request;
+         * the rest are only reached when a fetch comes back bot-blocked.
+         * An empty list means "whatever the executor was built with".
+         *
+         * @var list<string>
+         */
+        private readonly array $userAgents = [],
     ) {}
 
     /**
@@ -48,14 +73,34 @@ final class SafeHttpClient
      */
     public function get(string $url): array
     {
-        return $this->doGet($url, $this->maxRedirects);
+        $agents = $this->userAgents === [] ? [null] : $this->userAgents;
+
+        $result = $this->doGet($url, $this->maxRedirects, $agents[0]);
+
+        foreach (array_slice($agents, 1) as $agent) {
+            if (! self::isBotBlocked($result)) {
+                break;
+            }
+            $result = $this->doGet($url, $this->maxRedirects, $agent);
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param array{ok:bool,status?:int} $result
+     */
+    private static function isBotBlocked(array $result): bool
+    {
+        return $result['ok'] === true
+            && in_array($result['status'] ?? 0, self::BOT_BLOCK_STATUSES, true);
     }
 
     /**
      * @return array{ok:true,status:int,finalUrl:string,contentType:string,headers:array<string,string>,body:string}
      *        |array{ok:false,reason:string,detail:string}
      */
-    private function doGet(string $url, int $redirectsLeft): array
+    private function doGet(string $url, int $redirectsLeft, ?string $userAgent = null): array
     {
         $v = $this->urlValidator->validate($url);
         if (! $v['ok']) {
@@ -78,7 +123,7 @@ final class SafeHttpClient
         }
 
         $pinnedIp = $ips[0];
-        $result = $this->executor->execute($url, $v['host'], $pinnedIp, $v['port']);
+        $result = $this->executor->execute($url, $v['host'], $pinnedIp, $v['port'], $userAgent);
 
         if (! $result->ok) {
             return self::fail($result->error ?? 'unknown', $result->errorDetail ?? '');
@@ -94,7 +139,7 @@ final class SafeHttpClient
             if ($next === null) {
                 return self::fail(UrlValidator::REASON_MALFORMED, "bad Location: {$result->headers['location']}");
             }
-            return $this->doGet($next, $redirectsLeft - 1);
+            return $this->doGet($next, $redirectsLeft - 1, $userAgent);
         }
 
         return [

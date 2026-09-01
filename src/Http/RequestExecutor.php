@@ -16,7 +16,11 @@ namespace Ekumanov\LinkPreview\Http;
 interface RequestExecutor
 {
     /**
+     * $userAgent overrides the implementation's default for this one request.
+     * SafeHttpClient uses it to re-try a bot-blocked URL under a different
+     * identity; null means "use whatever you were configured with".
+     *
      * @return ExecutorResult
      */
-    public function execute(string $url, string $pinnedHost, string $pinnedIp, int $port): ExecutorResult;
+    public function execute(string $url, string $pinnedHost, string $pinnedIp, int $port, ?string $userAgent = null): ExecutorResult;
 }

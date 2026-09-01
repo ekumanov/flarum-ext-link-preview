@@ -267,9 +267,39 @@ INSERT INTO settings (`key`, value) VALUES
   ('ekumanov-link-preview.user_rate_per_hour', '20'),
   ('ekumanov-link-preview.max_urls_per_post',  '10'),
   ('ekumanov-link-preview.whitelist',          ''),
-  ('ekumanov-link-preview.blacklist',          '')
+  ('ekumanov-link-preview.blacklist',          ''),
+  ('ekumanov-link-preview.user_agents',        '')
 ON DUPLICATE KEY UPDATE value = VALUES(value);
 ```
+
+### `user_agents`
+
+One User-Agent per line, most preferred first. The first is used for every
+fetch; the rest are only tried when a site answers with a **block** status
+(401, 403, 406, 429), and each retry re-runs the whole validation and redirect
+chain under the new identity. Leave it empty for the built-in chain.
+
+Why a chain rather than one good string: a great many sites answer an
+unrecognised client with a block instead of content, and no single identity
+gets past all of them. Measured against 54 hosts that were blocking a live
+install:
+
+| Identity | Hosts recovered |
+|---|---|
+| Desktop Chrome | 3 |
+| `Twitterbot/1.0` | 4 |
+| `facebookexternalhit/1.1` | 4 |
+| Chrome **+ realistic `Accept` / `Sec-Fetch-*` headers** | 0 |
+
+The sets overlap only partly, so the chain beats any one of them. Header
+realism buys nothing at all — what remains after the User-Agent is IP
+reputation and TLS fingerprinting, which no header can talk its way past.
+
+The two scraper identities are in the default chain because sites very often
+allowlist them *specifically so* link previews work, which is exactly what this
+extension is doing. It is still borrowed identity, though. If you would rather
+the fetcher only ever present as itself, put a single line in this setting and
+the chain collapses to one request.
 
 ### `whitelist` / `blacklist`
 
@@ -292,8 +322,23 @@ want cards from this host."
 ```
 php flarum link-preview:backfill       # scan historical posts, enqueue missing fetches
 php flarum link-preview:sweep          # re-dispatch dropped fetch jobs (also runs on the scheduler)
+php flarum link-preview:retry-failed   # re-try fetches that failed recoverably (also on the scheduler)
 php flarum link-preview:refresh-self   # re-resolve cached self-link previews from the local DB
 ```
+
+`retry-failed` picks up rows whose last fetch failed for a reason that might
+since have cleared — a bot-block, a timeout, a 5xx — and leaves settled answers
+(404, an SSRF refusal, an oversized body, a non-HTML media URL) alone. Backoff
+is per row via the `fetch_attempts` column: 1h, then 6h, 1d, 3d, 7d, 30d, then
+the row is left alone. It runs hourly on the scheduler, so a site that keeps
+blocking is *not* hit hourly. `--dry-run` lists what it would re-try;
+`--ignore-backoff` re-tries every eligible row now.
+
+This matters more than it sounds. Before it existed a blocked URL was a dead
+row forever: the fetch recorded the block, nothing rescheduled it, and the post
+kept its bare link even after the site stopped blocking. On a live install with
+~4000 cached URLs, about a sixth of all recorded failures had already started
+working again by the time anyone checked.
 
 `refresh-self` rebuilds self-link previews that were cached before the local
 resolver shipped (they were fetched over HTTP and may carry a cropped forum

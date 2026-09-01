@@ -36,14 +36,51 @@ final class UrlExtractor
     ];
 
     /**
-     * Path-suffix patterns whose URLs Flarum's formatter already renders
-     * inline as <img>. These don't need OG fetching. (We can't ALWAYS tell a
-     * URL is an image without fetching it, but the common case is "obvious
-     * image extension in the path" — that's covered here cheaply.)
+     * Path suffixes that cannot produce a card, so fetching them is pure cost.
+     * Two groups, same outcome:
+     *
+     *   - images, which Flarum's formatter already renders inline as <img>;
+     *   - other binary media, which the fetcher would download (up to the 2 MB
+     *     cap) only to find no HTML to parse. On pianoclack this was 638 rows
+     *     of forum attachments — mostly mp3/wav/flac, i.e. audio the inline
+     *     player handles — plus a handful of .tif that blew the byte cap.
+     *
+     * We can't always tell a URL's type without fetching it, but "obvious
+     * media extension in the path" is the common case and it's free to check.
+     * .pdf is deliberately absent: some sites serve HTML from a .pdf path.
+     *
+     * @var list<string>
      */
-    private const SKIP_EXTENSIONS = [
+    public const SKIP_EXTENSIONS = [
+        // Images.
         '.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.svg', '.bmp', '.ico',
+        '.tif', '.tiff', '.heic', '.heif', '.jfif',
+        // Audio.
+        '.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.oga', '.opus',
+        '.wma', '.aiff', '.aif', '.mid', '.midi',
+        // Video.
+        '.mp4', '.m4v', '.webm', '.mov', '.avi', '.mkv',
+        // Archives / disk images.
+        '.zip', '.rar', '.7z', '.gz', '.tgz', '.bz2', '.dmg', '.iso',
     ];
+
+    /**
+     * Shared with FetchPreviewJob: extraction skips these URLs so no row is
+     * ever created, but rows predating this list (or created by an older
+     * version) still exist, and a sweep or retry must not re-fetch them.
+     */
+    public static function isNonFetchableMedia(string $url): bool
+    {
+        $path = strtolower((string) parse_url($url, PHP_URL_PATH));
+
+        foreach (self::SKIP_EXTENSIONS as $ext) {
+            if (str_ends_with($path, $ext)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public function __construct(
         private readonly UrlValidator $urlValidator,
@@ -146,7 +183,9 @@ final class UrlExtractor
             // (scheme/port/userinfo), but self-links never reach the fetcher —
             // they're resolved against the local DB. That also lets dev
             // installs on non-standard ports (e.g. localhost:8081) work.
-            $isSelfLink = $this->localResolver->parseSelfLink($href) !== null;
+            // Host-wide, not just /d/: every URL on our own hostname has to
+            // stay away from the fetcher, whether or not we can card it.
+            $isSelfLink = $this->localResolver->isSelfHost($href);
             $host = null;
 
             if (! $isSelfLink) {
@@ -162,13 +201,9 @@ final class UrlExtractor
                 // Formatter / other extensions handle these (YouTube). No card needed.
                 continue;
             }
-            // Cheap path-extension check — skip obvious image URLs (the
-            // formatter inlines them as <img>).
-            $path = strtolower((string) parse_url($href, PHP_URL_PATH));
-            foreach (self::SKIP_EXTENSIONS as $ext) {
-                if (str_ends_with($path, $ext)) {
-                    continue 2; // skip URL, next anchor
-                }
+            // Cheap path-extension check — skip URLs that can't yield a card.
+            if (self::isNonFetchableMedia($href)) {
+                continue;
             }
 
             if ($whitelist !== [] && ! self::hostMatches($host, $whitelist)) {

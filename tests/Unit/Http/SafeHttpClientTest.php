@@ -242,14 +242,140 @@ final class SafeHttpClientTest extends TestCase
         $this->assertSame(ExecutorResult::ERR_BODY_TOO_LARGE, $r['reason']);
     }
 
-    private function client(SpyResolver $resolver, FakeExecutor $executor, int $maxRedirects = 5): SafeHttpClient
+    // --- User-Agent fallback chain -------------------------------------
+
+    public function test_bot_block_retries_under_the_next_user_agent(): void
     {
+        $url = 'https://blocked.example.com/';
+        $resolver = new SpyResolver(['blocked.example.com' => ['93.184.216.34']]);
+        $executor = new FakeExecutor(
+            responses: [$url => ExecutorResult::ok(403, [], 'go away')],
+            agentResponses: [
+                'scraper-ua|'.$url => ExecutorResult::ok(200, ['content-type' => 'text/html'], '<html>hi</html>'),
+            ],
+        );
+        $client = $this->client($resolver, $executor, userAgents: ['browser-ua', 'scraper-ua']);
+
+        $r = $client->get($url);
+
+        $this->assertTrue($r['ok']);
+        $this->assertSame(200, $r['status']);
+        $this->assertSame('<html>hi</html>', $r['body']);
+        $this->assertSame(['browser-ua', 'scraper-ua'], $executor->userAgents());
+    }
+
+    public function test_first_user_agent_is_used_alone_when_it_works(): void
+    {
+        $url = 'https://open.example.com/';
+        $resolver = new SpyResolver(['open.example.com' => ['93.184.216.34']]);
+        $executor = new FakeExecutor([
+            $url => ExecutorResult::ok(200, ['content-type' => 'text/html'], 'ok'),
+        ]);
+        $client = $this->client($resolver, $executor, userAgents: ['browser-ua', 'scraper-ua']);
+
+        $r = $client->get($url);
+
+        $this->assertTrue($r['ok']);
+        $this->assertSame(['browser-ua'], $executor->userAgents(), 'a working fetch must cost exactly one request');
+    }
+
+    public function test_non_block_status_is_not_retried(): void
+    {
+        $url = 'https://gone.example.com/';
+        $resolver = new SpyResolver(['gone.example.com' => ['93.184.216.34']]);
+        $executor = new FakeExecutor([$url => ExecutorResult::ok(404, [], 'nope')]);
+        $client = $this->client($resolver, $executor, userAgents: ['browser-ua', 'scraper-ua']);
+
+        $r = $client->get($url);
+
+        $this->assertSame(404, $r['status']);
+        $this->assertSame(['browser-ua'], $executor->userAgents(), '404 means gone for everyone — do not re-ask');
+    }
+
+    public function test_transport_failure_is_not_retried_under_another_agent(): void
+    {
+        $url = 'https://dead.example.com/';
+        $resolver = new SpyResolver(['dead.example.com' => ['93.184.216.34']]);
+        $executor = new FakeExecutor([
+            $url => ExecutorResult::failure(ExecutorResult::ERR_TIMEOUT, 'exceeded 10s'),
+        ]);
+        $client = $this->client($resolver, $executor, userAgents: ['browser-ua', 'scraper-ua']);
+
+        $r = $client->get($url);
+
+        $this->assertFalse($r['ok']);
+        $this->assertSame(['browser-ua'], $executor->userAgents());
+    }
+
+    public function test_all_agents_blocked_returns_the_last_block(): void
+    {
+        $url = 'https://hard.example.com/';
+        $resolver = new SpyResolver(['hard.example.com' => ['93.184.216.34']]);
+        $executor = new FakeExecutor([$url => ExecutorResult::ok(403, [], 'no')]);
+        $client = $this->client($resolver, $executor, userAgents: ['a', 'b', 'c']);
+
+        $r = $client->get($url);
+
+        $this->assertSame(403, $r['status']);
+        $this->assertSame(['a', 'b', 'c'], $executor->userAgents());
+    }
+
+    public function test_retry_revalidates_the_full_redirect_chain(): void
+    {
+        $start = 'https://hop.example.com/';
+        $end = 'https://hop.example.com/final';
+        $resolver = new SpyResolver(['hop.example.com' => ['93.184.216.34']]);
+        $executor = new FakeExecutor(
+            responses: [
+                $start => ExecutorResult::ok(302, ['location' => '/final'], ''),
+                $end => ExecutorResult::ok(403, [], 'blocked'),
+            ],
+            agentResponses: [
+                'scraper-ua|'.$end => ExecutorResult::ok(200, ['content-type' => 'text/html'], 'content'),
+            ],
+        );
+        $client = $this->client($resolver, $executor, userAgents: ['browser-ua', 'scraper-ua']);
+
+        $r = $client->get($start);
+
+        $this->assertTrue($r['ok']);
+        $this->assertSame($end, $r['finalUrl']);
+        // The redirect hop is re-walked under the second identity, not resumed
+        // mid-chain — the second attempt must start from the original URL.
+        $this->assertSame(
+            ['browser-ua', 'browser-ua', 'scraper-ua', 'scraper-ua'],
+            $executor->userAgents(),
+        );
+    }
+
+    public function test_empty_agent_list_leaves_the_executor_default_alone(): void
+    {
+        $url = 'https://plain.example.com/';
+        $resolver = new SpyResolver(['plain.example.com' => ['93.184.216.34']]);
+        $executor = new FakeExecutor([$url => ExecutorResult::ok(200, [], 'ok')]);
+        $client = $this->client($resolver, $executor);
+
+        $client->get($url);
+
+        $this->assertSame([null], $executor->userAgents());
+    }
+
+    /**
+     * @param list<string> $userAgents
+     */
+    private function client(
+        SpyResolver $resolver,
+        FakeExecutor $executor,
+        int $maxRedirects = 5,
+        array $userAgents = [],
+    ): SafeHttpClient {
         return new SafeHttpClient(
             urlValidator: new UrlValidator(),
             resolver: $resolver,
             ipFilter: new DefaultIpFilter(),
             executor: $executor,
             maxRedirects: $maxRedirects,
+            userAgents: $userAgents,
         );
     }
 }
