@@ -4,6 +4,8 @@ namespace Ekumanov\LinkPreview\Console;
 
 use Ekumanov\LinkPreview\Fetch\FaviconProbe;
 use Ekumanov\LinkPreview\Fetch\IconResolver;
+use Ekumanov\LinkPreview\Icon\IconStore;
+use Ekumanov\LinkPreview\Parser\IconPicker;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
 use Ekumanov\LinkPreview\Settings\SettingsRepository;
 use Illuminate\Console\Command;
@@ -35,7 +37,7 @@ use Throwable;
 class BackfillIconsCommand extends Command
 {
     protected $signature = 'link-preview:backfill-icons
-                            {--only= : Restrict to one pass: "probe" (rows with no icon) or "validate" (measure stored icons). Default: both.}
+                            {--only= : Restrict to one pass: "probe" (rows with no icon), "validate" (measure + copy stored icons), or "prune" (delete unreferenced icon files). Default: validate + probe.}
                             {--limit=200 : Maximum rows to touch per pass in one run.}
                             {--host= : Only rows whose final URL is on this host (substring match).}
                             {--delay=500 : Milliseconds to wait between probes. Keep this non-zero.}
@@ -48,15 +50,22 @@ class BackfillIconsCommand extends Command
         ConnectionInterface $db,
         FaviconProbe $probe,
         IconResolver $resolver,
+        IconStore $store,
+        IconPicker $picker,
         SettingsRepository $settings,
         LocalDiscussionResolver $localResolver,
     ): int {
         $dry = (bool) $this->option('dry-run');
         $only = strtolower(trim((string) $this->option('only')));
 
-        if ($only !== '' && ! in_array($only, ['probe', 'validate'], true)) {
-            $this->error('--only must be "probe" or "validate".');
+        if ($only !== '' && ! in_array($only, ['probe', 'validate', 'prune'], true)) {
+            $this->error('--only must be "probe", "validate" or "prune".');
             return 1;
+        }
+
+        if ($only === 'prune') {
+            $this->prunePass($db, $store, $picker, $settings, $dry);
+            return 0;
         }
 
         if (! $settings->iconProbe() && ! $this->option('force')) {
@@ -223,9 +232,12 @@ class BackfillIconsCommand extends Command
             ->whereNotNull('retrieved_at')
             ->whereNotNull('icons')
             ->where('icons', '!=', '[]')
-            // Rows whose stored icons carry no measurement yet. A crude LIKE is
+            // Rows whose icons have not been measured yet, or have been
+            // measured but never copied to our own disk. A crude LIKE pair is
             // enough: it only has to narrow the scan, the real check is below.
-            ->where('icons', 'not like', '%"bytes"%')
+            ->where(fn ($q) => $q->where('icons', 'not like', '%"bytes"%')
+                ->orWhere(fn ($q2) => $q2->where('icons', 'not like', '%"stored"%')
+                    ->where('icons', 'not like', '%"proxy"%')))
             ->orderBy('id', 'asc');
 
         if ($hostFilter !== '') {
@@ -262,7 +274,7 @@ class BackfillIconsCommand extends Command
             }
 
             try {
-                $out = $resolver->validate($icons, $target, $maxBytes);
+                $out = $resolver->validate($icons, $target, $maxBytes, $settings->proxyIcons());
             } catch (Throwable $e) {
                 $stats['errors']++;
                 $this->warn("preview {$row->id}: {$e->getMessage()}");
@@ -295,5 +307,67 @@ class BackfillIconsCommand extends Command
         }
 
         $this->info('Validate pass: '.json_encode($stats));
+    }
+
+    /**
+     * Delete stored icon files no preview row points at any more — rows that
+     * were removed, re-fetched onto a different icon, or had one retired.
+     *
+     * Reads every row's icons rather than trusting a LIKE: a file is only
+     * deleted once we have positively seen the whole corpus and it appeared in
+     * none of it. Files are content-addressed, so the cost of being wrong is
+     * one re-fetch, but deleting something still in use would blank a card.
+     */
+    private function prunePass(
+        ConnectionInterface $db,
+        IconStore $store,
+        IconPicker $picker,
+        SettingsRepository $settings,
+        bool $dry,
+    ): void {
+        $referenced = [];
+
+        $db->table('ekumanov_link_previews')
+            ->select('icons')
+            ->whereNotNull('icons')
+            ->where('icons', 'like', '%"stored"%')
+            ->orderBy('id')
+            ->chunk(500, function ($rows) use (&$referenced) {
+                foreach ($rows as $row) {
+                    foreach (json_decode((string) $row->icons, true) ?: [] as $icon) {
+                        if (is_array($icon) && is_string($icon['stored'] ?? null)) {
+                            $referenced[$icon['stored']] = true;
+                        }
+                    }
+                }
+            });
+
+        $files = $store->all();
+        $orphans = array_values(array_filter($files, fn (string $f) => ! isset($referenced[$f])));
+
+        $this->info(sprintf(
+            '── prune: %d file(s) on disk, %d still referenced, %d orphaned',
+            count($files),
+            count($referenced),
+            count($orphans),
+        ));
+
+        if ($orphans === []) {
+            return;
+        }
+
+        if ($dry) {
+            foreach (array_slice($orphans, 0, 20) as $f) {
+                $this->line('  would delete '.$f);
+            }
+            $this->warn('(dry-run — nothing was deleted)');
+            return;
+        }
+
+        foreach ($orphans as $f) {
+            $store->delete($f);
+        }
+
+        $this->info('Deleted '.count($orphans).' orphaned icon file(s).');
     }
 }

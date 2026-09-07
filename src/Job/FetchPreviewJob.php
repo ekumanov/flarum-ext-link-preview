@@ -227,6 +227,7 @@ class FetchPreviewJob extends AbstractJob
                 $icons,
                 $preview->final_url ?: $preview->url,
                 $settings->faviconMaxBytes(),
+                $settings->proxyIcons(),
             )['icons'];
         } catch (Throwable $e) {
             $log->debug('link-preview icon validation failed', [

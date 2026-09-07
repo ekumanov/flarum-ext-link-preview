@@ -2,7 +2,9 @@
 
 namespace Ekumanov\LinkPreview\Tests\Unit;
 
+use Ekumanov\LinkPreview\Icon\IconStore;
 use Ekumanov\LinkPreview\Parser\IconPicker;
+use Ekumanov\LinkPreview\Tests\Support\TempDisk;
 use Ekumanov\LinkPreview\PostResourceFields;
 use Ekumanov\LinkPreview\Preview;
 use Ekumanov\LinkPreview\Settings\SettingsRepository;
@@ -18,6 +20,18 @@ use ReflectionMethod;
  */
 final class PostResourceFieldsTest extends TestCase
 {
+    private string $root;
+
+    protected function setUp(): void
+    {
+        $this->root = sys_get_temp_dir().'/lp-fields-'.bin2hex(random_bytes(6));
+    }
+
+    protected function tearDown(): void
+    {
+        TempDisk::cleanup($this->root);
+    }
+
     public function test_payload_carries_a_favicon_when_a_candidate_exists(): void
     {
         $payload = $this->build($this->preview(icons: [
@@ -208,7 +222,11 @@ final class PostResourceFieldsTest extends TestCase
      */
     private function build(Preview $preview, array $settings = []): array
     {
-        $fields = new PostResourceFields(new IconPicker(), new SettingsRepository($this->settings($settings)));
+        $fields = new PostResourceFields(
+            new IconPicker(),
+            new SettingsRepository($this->settings($settings)),
+            new IconStore(TempDisk::make($this->root)),
+        );
 
         $post = new Post();
         $post->id = 7;

@@ -83,9 +83,11 @@ leaves the actual fetch for the sweep, so it never blocks the save. See
   is a post being saved/edited by an authenticated user.
 - **No retries.** A failed fetch stays failed (one entry per URL) — a single bad
   URL never becomes a fetch storm.
-- **No image proxy.** Thumbnails and site icons are hot-linked from the source.
-  A failed image load degrades to a fixed-size placeholder slot (no layout
-  shift).
+- **No thumbnail proxy.** Card thumbnails are hot-linked from the source; a
+  failed image load degrades to a fixed-size placeholder slot (no layout shift).
+  Site *icons* are the exception — they are copied to your own disk, because
+  they are small and hot-linking them would touch every linked domain on every
+  page view. See "Site icons are served from your forum".
 - **No third-party favicon service.** Site icons come from the page's own
   declared icons, or from one server-side probe of its own `/favicon.ico`.
   Readers' browsers never contact a favicon aggregator.
@@ -275,7 +277,8 @@ INSERT INTO settings (`key`, value) VALUES
   ('ekumanov-link-preview.user_agents',        ''),
   ('ekumanov-link-preview.show_favicons',      '1'),
   ('ekumanov-link-preview.icon_probe',         '1'),
-  ('ekumanov-link-preview.favicon_max_bytes',  '32768')   -- 32 KB
+  ('ekumanov-link-preview.favicon_max_bytes',  '32768'),  -- 32 KB
+  ('ekumanov-link-preview.proxy_icons',        '1')
 ON DUPLICATE KEY UPDATE value = VALUES(value);
 ```
 
@@ -309,6 +312,44 @@ until `link-preview:backfill-icons` measures them.
 A site that declares its logo as both `og:image` and favicon has given us a
 brand mark rather than a picture of anything: it fills the small slot and the
 thumbnail slot stays empty, rather than the card showing a magnified logo.
+
+### Site icons are served from your forum, not hot-linked
+
+With `proxy_icons` on (the default), each site icon is copied to
+`assets/link-preview-icons/` during the fetch that already happens, and cards
+point at your own domain.
+
+The reason is the same one that ruled out a third-party favicon service: a
+hot-linked icon means a reader's browser opens a connection to **every domain a
+discussion links to**. That is the leak, merely spread across many hosts instead
+of concentrated in one. Serving the icons yourself removes it, and removes those
+DNS lookups and TLS handshakes from the page along with it.
+
+Bytes are stored verbatim — no resizing. Measured across a live install the mean
+icon is 4.6 KB and 53% are `.ico`, which neither GD nor a plain PHP decoder can
+read, so re-encoding would mean an Imagick dependency for a trivial saving. Not
+decoding untrusted images is worth something on its own.
+
+**What is refused.** These bytes come from an attacker-influenceable URL and are
+about to be served from your origin, so only formats identified by their own
+magic bytes are stored — PNG, GIF, JPEG, ICO and WebP. The URL's extension is
+never consulted (one real row's icon href ends in `.php`). **SVG is refused
+outright**: it is a document format that can carry script, and served from your
+origin that script would run there. SVG icons fall back to a lettered chip.
+Filenames are the SHA-256 of the content, so nothing from the remote host
+reaches the path and identical icons collapse onto one file.
+
+Converting existing rows: `php flarum link-preview:backfill-icons`. Removing
+files no row points at any more: `--only=prune`.
+
+> **Directory ownership matters.** Icons are written both by the queue worker
+> and by the console command, which on many installs run as *different users*
+> (`www-data` and your deploy user). If one of them creates
+> `assets/link-preview-icons/` at the default 0755, the other cannot write to
+> it. Create it up front so both can:
+> `mkdir -p assets/link-preview-icons && chmod 2775 assets/link-preview-icons`
+> — matching the ownership of your other asset directories. A write failure is
+> never permanent: the icon is simply retried on the next run.
 
 **Cards whose source offers no usable icon** — none declared, all of them dead,
 or the only one too heavy — fall back to a lettered chip built from the

@@ -23,6 +23,16 @@ ekumanov-link-preview:
         host the page came from — no third-party favicon service is used, so
         readers' browsers never contact anyone new. Tried once per link, never
         repeated on later fetches.
+      proxy_icons: Serve site icons from this forum
+      proxy_icons_help: >
+        Keep a copy of each site icon on this forum's own disk and serve it from
+        here. With this off, icons are hot-linked, which means a reader's
+        browser opens a connection to every domain a discussion links to — the
+        same exposure a third-party favicon service would create, spread across
+        many hosts instead of one. Copies are taken during the fetch that
+        already happens, so this costs no extra requests. SVG icons are never
+        copied (an SVG can carry script) and fall back to a lettered chip.
+        Existing icons are converted by `php flarum link-preview:backfill-icons`.
       favicon_max_bytes: Max icon size (bytes)
       favicon_max_bytes_help: >
         Site icons larger than this are not shown. Every icon is measured once,

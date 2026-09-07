@@ -11,6 +11,9 @@ use Ekumanov\LinkPreview\Preview;
 use Ekumanov\LinkPreview\Listener\ScanPostUrls;
 use Ekumanov\LinkPreview\PostResourceFields;
 use Flarum\Api\Endpoint;
+use Flarum\Foundation\Paths;
+use Flarum\Http\UrlGenerator;
+use League\Flysystem\Visibility;
 use Flarum\Api\Resource;
 use Flarum\Extend;
 use Flarum\Post\Event\Posted;
@@ -68,6 +71,24 @@ return [
 
     (new Extend\ServiceProvider())
         ->register(\Ekumanov\LinkPreview\LinkPreviewServiceProvider::class),
+
+    // Site icons are served from here rather than hot-linked, so a reader's
+    // browser never contacts the domains a discussion links to. Filenames are
+    // the SHA-256 of the content, so the year-long cache header the assets
+    // directory already carries is safe: a changed icon is a different file.
+    (new Extend\Filesystem())
+        ->disk('ekumanov-link-preview-icons', function (Paths $paths, UrlGenerator $url) {
+            return [
+                'root' => "$paths->public/assets/link-preview-icons",
+                'url' => $url->to('forum')->path('assets/link-preview-icons'),
+                // Without this the local adapter creates the directory 0700,
+                // which on a normal install — CLI as one user, PHP-FPM as
+                // another — means whichever writes first locks the other out.
+                // If the CLI wins, the web server cannot read the files and
+                // every icon 404s silently. Core's own assets disk sets it too.
+                'visibility' => Visibility::PUBLIC,
+            ];
+        }),
 
     // Permission: gate URL→preview scanning on the post author's group. Default
     // grant covered by Extend\Policy/Permissions in stock Flarum — we just

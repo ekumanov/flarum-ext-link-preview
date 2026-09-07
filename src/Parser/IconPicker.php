@@ -48,6 +48,25 @@ final class IconPicker
     }
 
     /**
+     * The winning candidate together with the stored entry it came from, for
+     * callers that need what we recorded about it — a local copy's filename,
+     * or the note that we declined to make one.
+     *
+     * @return array{url:string,entry:array<string,mixed>}|null
+     */
+    public function pickEntry(mixed $icons, string $finalUrl, ?int $maxBytes = null): ?array
+    {
+        $top = $this->rank($icons, $finalUrl, $maxBytes)[0] ?? null;
+        if ($top === null) {
+            return null;
+        }
+
+        $entry = is_array($icons) && is_array($icons[$top['index']] ?? null) ? $icons[$top['index']] : [];
+
+        return ['url' => $top['url'], 'entry' => $entry];
+    }
+
+    /**
      * Every usable candidate, best first. Callers that need to write back to
      * the stored list (IconResolver, recording a measured size) get each
      * candidate's index in the original `icons` array alongside its URL.

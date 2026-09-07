@@ -3,6 +3,7 @@
 namespace Ekumanov\LinkPreview\Fetch;
 
 use Ekumanov\LinkPreview\Http\SafeHttpClient;
+use Ekumanov\LinkPreview\Icon\IconStore;
 use Ekumanov\LinkPreview\Parser\IconPicker;
 
 /**
@@ -36,13 +37,19 @@ final class IconResolver
     public function __construct(
         private readonly SafeHttpClient $client,
         private readonly IconPicker $picker,
+        private readonly IconStore $store,
     ) {}
 
     /**
      * @param  list<array<string,mixed>> $icons
      * @return array{icons:list<array<string,mixed>>,checks:int,changed:bool}
      */
-    public function validate(array $icons, string $finalUrl, int $maxBytes): array
+    /**
+     * @param  bool $proxy keep a copy on our own disk so readers never fetch
+     *                     the icon from its source
+     * @return array{icons:list<array<string,mixed>>,checks:int,changed:bool}
+     */
+    public function validate(array $icons, string $finalUrl, int $maxBytes, bool $proxy = false): array
     {
         $checks = 0;
         $changed = false;
@@ -56,41 +63,74 @@ final class IconResolver
             $top = $ranked[0];
             $entry = $icons[$top['index']] ?? [];
 
+            // Wanted on our own disk and not there yet — worth a fetch even if
+            // we already know its size, because the size is all we kept. This
+            // is what lets the proxy roll out over rows measured before it
+            // existed, at one request each.
+            $needsCopy = $proxy
+                && ! isset($entry['stored'])
+                && ! array_key_exists('proxy', $entry);
+
             // Already measured and still winning: it fits, we are done.
-            if (isset($entry['bytes'])) {
+            if (isset($entry['bytes']) && ! $needsCopy) {
                 break;
             }
 
             $checks++;
-            $measured = $this->measure($top['url']);
+            $body = $this->fetch($top['url']);
 
-            if ($measured === null) {
+            if ($body === null) {
                 // Couldn't reach it. Leave the entry untouched so a later run
                 // can try again, and stop — we can't make progress right now.
                 break;
             }
 
-            if ($measured === false) {
+            if ($body === false) {
                 $icons[$top['index']]['bad'] = true; // definite: not a usable image
-            } else {
-                $icons[$top['index']]['bytes'] = $measured;
+                $changed = true;
+                continue;
             }
 
+            $measured = strlen($body);
+            $icons[$top['index']]['bytes'] = $measured;
             $changed = true;
 
-            if ($measured !== false && $measured <= $maxBytes) {
-                break; // the winner fits
+            if ($measured > $maxBytes) {
+                continue; // too heavy; the annotation promotes the next candidate
             }
+
+            // It fits. Take our own copy while the bytes are still in hand —
+            // this is the whole reason the proxy costs no extra request.
+            if ($proxy) {
+                $stored = $this->store->store($body);
+
+                if ($stored !== null) {
+                    $icons[$top['index']]['stored'] = $stored;
+                } elseif (IconStore::identify($body) === null) {
+                    // A format we will never re-serve — an SVG, or something
+                    // that is not an image at all. Recorded so the display
+                    // layer shows a monogram rather than quietly hot-linking
+                    // it after all.
+                    $icons[$top['index']]['proxy'] = false;
+                }
+                // Otherwise the bytes were fine and the write failed: a
+                // directory the worker cannot write, a full disk. Annotate
+                // nothing, so the next run tries again instead of condemning
+                // a perfectly good icon over a permissions mistake.
+            }
+
+            break; // the winner fits
         }
 
         return ['icons' => array_values($icons), 'checks' => $checks, 'changed' => $changed];
     }
 
     /**
-     * @return int|false|null bytes; false = a definite "not a usable image";
-     *                        null = we could not tell (transport failure)
+     * @return string|false|null the body; false = a definite "not a usable
+     *                           image"; null = we could not tell (transport
+     *                           failure, so no verdict and no annotation)
      */
-    private function measure(string $url): int|false|null
+    private function fetch(string $url): string|false|null
     {
         $result = $this->client->get($url);
 
@@ -106,8 +146,6 @@ final class IconResolver
             return false;
         }
 
-        $bytes = strlen($result['body']);
-
-        return $bytes === 0 ? false : $bytes;
+        return $result['body'] === '' ? false : $result['body'];
     }
 }

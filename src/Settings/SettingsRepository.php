@@ -105,6 +105,20 @@ final class SettingsRepository
     }
 
     /**
+     * Serve site icons from this forum's own disk instead of hot-linking them
+     * from the source.
+     *
+     * On by default: a hot-linked icon means a reader's browser opens a
+     * connection to every domain a discussion links to, which is the same leak
+     * this extension refused a third-party favicon service over. Turning it off
+     * restores hot-linking; already-stored icons keep being served locally.
+     */
+    public function proxyIcons(): bool
+    {
+        return $this->boolSetting('proxy_icons', true);
+    }
+
+    /**
      * Size ceiling for a site icon, probed or declared. Measured across a live
      * install's icons: median 4 KB, p95 17 KB — but a tail reaching 292 KB for
      * an 18px slot. 32 KB clears the p95 comfortably and cuts the tail.

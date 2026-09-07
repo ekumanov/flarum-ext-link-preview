@@ -3,6 +3,7 @@
 namespace Ekumanov\LinkPreview;
 
 use Carbon\Carbon;
+use Ekumanov\LinkPreview\Icon\IconStore;
 use Ekumanov\LinkPreview\Parser\IconPicker;
 use Ekumanov\LinkPreview\Settings\SettingsRepository;
 use Flarum\Api\Context;
@@ -34,6 +35,7 @@ class PostResourceFields
     public function __construct(
         private readonly IconPicker $icons,
         private readonly SettingsRepository $settings,
+        private readonly IconStore $store,
     ) {}
 
     public function __invoke(): array
@@ -196,7 +198,29 @@ class PostResourceFields
             return null;
         }
 
-        return $this->icons->pick($preview->icons, $baseUrl, $this->settings->faviconMaxBytes());
+        $chosen = $this->icons->pickEntry($preview->icons, $baseUrl, $this->settings->faviconMaxBytes());
+        if ($chosen === null) {
+            return null;
+        }
+
+        // Our own copy, if we have one. Serving it from the forum's disk is
+        // what keeps a reader's browser from contacting the linked domain at
+        // all — see IconStore.
+        $stored = is_string($chosen['entry']['stored'] ?? null) ? $chosen['entry']['stored'] : null;
+        if ($stored !== null) {
+            return $this->store->url($stored) ?? $chosen['url'];
+        }
+
+        // We tried and will not re-serve this one (an SVG, or an unwritable
+        // disk). Hot-linking it anyway would quietly reintroduce exactly the
+        // leak the proxy exists to close, so the card falls back to a monogram.
+        if (($chosen['entry']['proxy'] ?? null) === false && $this->settings->proxyIcons()) {
+            return null;
+        }
+
+        // Not processed yet — hot-link it for now. This is what makes turning
+        // the proxy on a gradual migration rather than a forum-wide blank.
+        return $chosen['url'];
     }
 
     /**

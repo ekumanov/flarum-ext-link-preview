@@ -10,11 +10,15 @@ use Ekumanov\LinkPreview\Http\RequestExecutor;
 use Ekumanov\LinkPreview\Http\Resolver;
 use Ekumanov\LinkPreview\Http\SafeHttpClient;
 use Ekumanov\LinkPreview\Http\UrlValidator;
+use Ekumanov\LinkPreview\Icon\IconStore;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
 use Ekumanov\LinkPreview\Settings\SettingsRepository;
 use Flarum\Foundation\AbstractServiceProvider;
 use Flarum\Foundation\Config;
 use Flarum\Settings\SettingsRepositoryInterface;
+use Illuminate\Contracts\Filesystem\Factory as FilesystemFactory;
+use Psr\Log\LoggerInterface;
+use Throwable;
 
 /**
  * Binds the SSRF-safe HTTP stack so SafeHttpClient (and its dependencies) can
@@ -46,6 +50,25 @@ class LinkPreviewServiceProvider extends AbstractServiceProvider
             maxRedirects: 5,
             userAgents: $c->make(SettingsRepository::class)->userAgents(),
         ));
+
+        // Where our own copies of site icons live. The local Flysystem adapter
+        // creates its root in its constructor and throws if it cannot, so an
+        // admin whose assets directory is read-only would otherwise get a 500
+        // from every post render. Catch it here and hand back a store that
+        // simply cannot store: cards fall back to hot-linking, exactly as they
+        // did before the proxy existed.
+        $this->container->singleton(IconStore::class, function ($c) {
+            try {
+                return new IconStore($c->make(FilesystemFactory::class)->disk('ekumanov-link-preview-icons'));
+            } catch (Throwable $e) {
+                $c->make(LoggerInterface::class)->warning(
+                    'link-preview: icon store unavailable, falling back to hot-linking',
+                    ['err' => $e->getMessage()],
+                );
+
+                return new IconStore();
+            }
+        });
 
         // Self-link short-circuit. Base URL is computed once from Flarum's
         // Config; the resolver compares posted URLs' host+path against it

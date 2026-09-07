@@ -76,6 +76,17 @@ app.initializers.add('ekumanov/link-preview', () => {
 
     reg.registerSetting(
         {
+            setting: 'ekumanov-link-preview.proxy_icons',
+            type: 'bool',
+            label: app.translator.trans('ekumanov-link-preview.admin.settings.proxy_icons'),
+            help: app.translator.trans('ekumanov-link-preview.admin.settings.proxy_icons_help'),
+            default: '1',
+        },
+        55
+    );
+
+    reg.registerSetting(
+        {
             setting: 'ekumanov-link-preview.favicon_max_bytes',
             type: 'number',
             label: app.translator.trans('ekumanov-link-preview.admin.settings.favicon_max_bytes'),

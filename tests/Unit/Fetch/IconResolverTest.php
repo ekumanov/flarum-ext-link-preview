@@ -7,7 +7,9 @@ use Ekumanov\LinkPreview\Http\DefaultIpFilter;
 use Ekumanov\LinkPreview\Http\ExecutorResult;
 use Ekumanov\LinkPreview\Http\SafeHttpClient;
 use Ekumanov\LinkPreview\Http\UrlValidator;
+use Ekumanov\LinkPreview\Icon\IconStore;
 use Ekumanov\LinkPreview\Parser\IconPicker;
+use Ekumanov\LinkPreview\Tests\Support\TempDisk;
 use Ekumanov\LinkPreview\Tests\Support\FakeExecutor;
 use Ekumanov\LinkPreview\Tests\Support\SpyResolver;
 use PHPUnit\Framework\TestCase;
@@ -20,6 +22,18 @@ use PHPUnit\Framework\TestCase;
 final class IconResolverTest extends TestCase
 {
     private const MAX = 32768;
+
+    private string $root;
+
+    protected function setUp(): void
+    {
+        $this->root = sys_get_temp_dir().'/lp-icons-'.bin2hex(random_bytes(6));
+    }
+
+    protected function tearDown(): void
+    {
+        TempDisk::cleanup($this->root);
+    }
 
     public function test_records_the_size_of_an_icon_that_fits(): void
     {
@@ -125,6 +139,90 @@ final class IconResolverTest extends TestCase
         $this->assertFalse($r['changed']);
     }
 
+    // ─── proxying ─────────────────────────────────────────────────────
+
+    public function test_keeps_a_copy_of_the_winning_icon(): void
+    {
+        $r = $this->resolve(
+            [['href' => '/favicon.png']],
+            ['https://example.com/favicon.png' => $this->image(900)],
+            proxy: true,
+        );
+
+        $this->assertArrayHasKey('stored', $r['icons'][0]);
+        $this->assertStringEndsWith('.png', $r['icons'][0]['stored']);
+        $this->assertArrayNotHasKey('proxy', $r['icons'][0]);
+    }
+
+    public function test_refuses_to_copy_an_svg_and_says_so_permanently(): void
+    {
+        $svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+
+        $r = $this->resolve(
+            [['href' => '/icon.svg']],
+            ['https://example.com/icon.svg' => ExecutorResult::ok(200, ['content-type' => 'image/svg+xml'], $svg)],
+            proxy: true,
+        );
+
+        $this->assertFalse($r['icons'][0]['proxy'], 'an SVG must never be re-served from our origin');
+        $this->assertArrayNotHasKey('stored', $r['icons'][0]);
+    }
+
+    public function test_an_unwritable_store_is_treated_as_temporary(): void
+    {
+        // A permissions mistake must not permanently condemn a good icon —
+        // the next run has to be able to pick it up.
+        $client = new SafeHttpClient(
+            urlValidator: new UrlValidator(),
+            resolver: new SpyResolver(['example.com' => ['93.184.216.34']]),
+            ipFilter: new DefaultIpFilter(),
+            executor: new FakeExecutor(['https://example.com/favicon.png' => $this->image(900)]),
+        );
+
+        $r = (new IconResolver($client, new IconPicker(), new IconStore()))
+            ->validate([['href' => '/favicon.png']], 'https://example.com/page', self::MAX, true);
+
+        $this->assertArrayNotHasKey('stored', $r['icons'][0]);
+        $this->assertArrayNotHasKey('proxy', $r['icons'][0], 'a write failure must stay retryable');
+        $this->assertSame(900, $r['icons'][0]['bytes']);
+    }
+
+    public function test_does_not_copy_when_proxying_is_off(): void
+    {
+        $r = $this->resolve(
+            [['href' => '/favicon.png']],
+            ['https://example.com/favicon.png' => $this->image(900)],
+        );
+
+        $this->assertArrayNotHasKey('stored', $r['icons'][0]);
+        $this->assertArrayNotHasKey('proxy', $r['icons'][0]);
+    }
+
+    public function test_re_fetches_an_already_measured_icon_to_copy_it(): void
+    {
+        // The rollout path: rows measured before the proxy existed carry
+        // `bytes` but no copy, and one request each is what converts them.
+        $r = $this->resolve(
+            [['href' => '/favicon.png', 'bytes' => 900]],
+            ['https://example.com/favicon.png' => $this->image(900)],
+            proxy: true,
+        );
+
+        $this->assertSame(1, $r['checks']);
+        $this->assertArrayHasKey('stored', $r['icons'][0]);
+    }
+
+    public function test_does_not_re_fetch_an_icon_already_copied(): void
+    {
+        $r = $this->resolve(
+            [['href' => '/favicon.png', 'bytes' => 900, 'stored' => 'abc.png']],
+            ['https://example.com/favicon.png' => $this->image(900)],
+            proxy: true,
+        );
+
+        $this->assertSame(0, $r['checks']);
+    }
+
     public function test_returns_empty_walk_when_nothing_is_choosable(): void
     {
         $r = $this->resolve([['href' => 'data:image/png;base64,AA']], []);
@@ -132,9 +230,13 @@ final class IconResolverTest extends TestCase
         $this->assertSame(0, $r['checks']);
     }
 
+    /** A byte-valid PNG of the requested length, so the store will accept it. */
     private function image(int $bytes): ExecutorResult
     {
-        return ExecutorResult::ok(200, ['content-type' => 'image/png'], str_repeat('x', $bytes));
+        $png = "\x89PNG\r\n\x1a\n";
+        $body = $png.str_repeat('x', max(0, $bytes - strlen($png)));
+
+        return ExecutorResult::ok(200, ['content-type' => 'image/png'], $body);
     }
 
     /**
@@ -142,7 +244,7 @@ final class IconResolverTest extends TestCase
      * @param  array<string, ExecutorResult> $responses
      * @return array{icons:list<array<string,mixed>>,checks:int,changed:bool}
      */
-    private function resolve(array $icons, array $responses): array
+    private function resolve(array $icons, array $responses, bool $proxy = false): array
     {
         $client = new SafeHttpClient(
             urlValidator: new UrlValidator(),
@@ -151,7 +253,12 @@ final class IconResolverTest extends TestCase
             executor: new FakeExecutor($responses),
         );
 
-        return (new IconResolver($client, new IconPicker()))
-            ->validate($icons, 'https://example.com/page', self::MAX);
+        return (new IconResolver($client, new IconPicker(), $this->store()))
+            ->validate($icons, 'https://example.com/page', self::MAX, $proxy);
+    }
+
+    private function store(): IconStore
+    {
+        return new IconStore(TempDisk::make($this->root));
     }
 }
