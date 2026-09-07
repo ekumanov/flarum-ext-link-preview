@@ -302,6 +302,48 @@ function buildSkeleton() {
     return card;
 }
 
+// Curated so white text clears WCAG AA on every one of them, in both themes —
+// a hue generated from a hash would drift into yellows and greens that white
+// cannot sit on.
+const MARK_COLORS = ['#3F6698', '#63488F', '#985232', '#2C7355', '#A2394A', '#6F6230', '#31596F', '#7F4571'];
+
+// Second-to-last label, so `en.wikipedia.org` gives W rather than E and
+// `bbc.co.uk` gives B rather than C. Not a public-suffix lookup — just the
+// cheap approximation of one, which is all a single letter needs.
+function monogramFor(domain) {
+    const labels = String(domain || '')
+        .toLowerCase()
+        .split('.')
+        .filter(Boolean);
+    if (!labels.length) return null;
+
+    let i = Math.max(0, labels.length - 2);
+    if (i > 0 && ['co', 'com', 'org', 'net', 'ac', 'gov', 'edu'].includes(labels[i])) i--;
+
+    const letter = (labels[i].match(/[a-z0-9]/) || [])[0];
+    return letter ? letter.toUpperCase() : null;
+}
+
+function markColor(domain) {
+    let hash = 0;
+    const s = String(domain || '');
+    for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
+    return MARK_COLORS[hash % MARK_COLORS.length];
+}
+
+// Turn an empty slot into a lettered chip. Costs no request and no bytes,
+// which is the whole reason it is preferred over proxying or resizing a
+// source's own icon: a quarter of cards have no icon we can use, and only a
+// fourteenth of those have anything worth resizing.
+function applyMonogram(slot, domain) {
+    const letter = monogramFor(domain);
+    if (!letter) return false;
+    slot.classList.add(CARD_CLASS + '-site-mark--monogram');
+    slot.style.backgroundColor = markColor(domain);
+    slot.textContent = letter;
+    return true;
+}
+
 /**
  * The 18x18 mark in front of the site name — the forum's own share logo on a
  * self-link, otherwise the source page's favicon.
@@ -317,10 +359,16 @@ function buildSkeleton() {
  * close nothing. `no-referrer` still applies, so the source host learns nothing
  * about which discussion the reader is on.
  */
-function buildSiteMark(src) {
+function buildSiteMark(src, domain) {
     const slot = document.createElement('span');
     slot.className = CARD_CLASS + '-site-mark';
     slot.setAttribute('aria-hidden', 'true'); // decorative — site name text follows
+
+    // No icon and no letter we could derive: return nothing rather than an
+    // empty box, so a card with no mark keeps its old flush-left site row.
+    if (!src) {
+        return applyMonogram(slot, domain) ? slot : null;
+    }
 
     const img = document.createElement('img');
     img.className = CARD_CLASS + '-site-favicon';
@@ -332,7 +380,18 @@ function buildSiteMark(src) {
     img.fetchPriority = 'low';
     img.decoding = 'async';
     img.referrerPolicy = 'no-referrer';
-    img.addEventListener('error', () => img.remove(), { once: true }); // drop silently, keep the slot
+    // A hot-linked icon that 404s or gets blocked leaves the slot standing and
+    // falls back to the letter, so a dead third-party URL degrades to a mark
+    // rather than a blank square. Swapping the contents of a fixed-size box
+    // changes no layout, so this shifts nothing.
+    img.addEventListener(
+        'error',
+        () => {
+            img.remove();
+            applyMonogram(slot, domain);
+        },
+        { once: true }
+    );
     slot.appendChild(img);
 
     return slot;
@@ -422,7 +481,14 @@ function buildCard(preview) {
 
     const site = document.createElement('div');
     site.className = CARD_CLASS + '-site';
-    if (siteMark) site.appendChild(buildSiteMark(siteMark));
+    // The switch that hides site icons hides the monogram too — it is a site
+    // mark either way. Read at render time, since initializers run before
+    // `app.forum` exists.
+    const marksOn = !app.forum || app.forum.attribute('ekumanovLinkPreviewSiteMarks') !== false;
+    if (marksOn) {
+        const mark = buildSiteMark(siteMark, preview.domain);
+        if (mark) site.appendChild(mark);
+    }
     const siteLabel = document.createElement('span');
     siteLabel.textContent = preview.siteName || preview.domain || '';
     site.appendChild(siteLabel);

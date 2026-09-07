@@ -306,8 +306,15 @@ at preview-fetch time and its size recorded in the `icons` column; anything over
 instead (up to three per page). Rows stored before this existed keep their marks
 until `link-preview:backfill-icons` measures them.
 
-A site that declares its logo as both `og:image` and favicon would render the
-same picture twice in one card; in that case only the thumbnail is kept.
+A site that declares its logo as both `og:image` and favicon has given us a
+brand mark rather than a picture of anything: it fills the small slot and the
+thumbnail slot stays empty, rather than the card showing a magnified logo.
+
+**Cards whose source offers no usable icon** — none declared, all of them dead,
+or the only one too heavy — fall back to a lettered chip built from the
+hostname. It costs no request and no bytes, so every card carries a mark instead
+of some carrying a gap, and a hot-linked icon that 404s degrades to the letter
+rather than to a blank square. Turning off `show_favicons` hides it too.
 
 There is deliberately **no third-party favicon service**. Google's
 `s2/favicons` and its equivalents would be a one-line alternative and would also

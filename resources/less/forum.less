@@ -257,6 +257,27 @@
     border-radius: 3px;
 }
 
+// Fallback for the quarter of cards whose source offers no icon we can use —
+// none declared, all of them dead, or the only one too heavy to serve. A
+// letter chip costs no request and no bytes, so every card carries a mark
+// instead of some carrying a gap. The background colour is set inline from a
+// hash of the hostname, so a site always gets the same one.
+.LinkPreview-card-site-mark--monogram {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    // The site row is uppercased and letterspaced; a single glyph should be
+    // neither pushed off-centre by tracking nor re-transformed.
+    letter-spacing: 0;
+    text-transform: none;
+    font-style: normal;
+}
+
 .LinkPreview-card-title {
     font-weight: 600;
     line-height: 1.3;

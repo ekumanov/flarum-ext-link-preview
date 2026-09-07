@@ -93,7 +93,17 @@ return [
     // admin explicitly excludes a host. Dismiss/restore controls give
     // authors+mods per-card override on top of the host-level setting.
     (new Extend\Settings())
-        ->default('ekumanov-link-preview.blacklist', ''),
+        ->default('ekumanov-link-preview.blacklist', '')
+        // One boolean for the whole forum, not a field per preview: the card
+        // falls back to a monogram when a site gives us no usable icon, and
+        // that is still a site mark — so the switch that hides icons has to
+        // hide it too. Absent means the code default (on), matching
+        // SettingsRepository::showFavicons().
+        ->serializeToForum(
+            'ekumanovLinkPreviewSiteMarks',
+            'ekumanov-link-preview.show_favicons',
+            fn ($value) => $value === null || $value === '' ? true : ((bool) $value && $value !== '0'),
+        ),
 
     // Scheduler safety-net: every 5 min, re-dispatch any placeholder preview
     // rows whose original FetchPreviewJob seems to have been dropped (worker
