@@ -25,10 +25,12 @@ ekumanov-link-preview:
         repeated on later fetches.
       favicon_max_bytes: Max icon size (bytes)
       favicon_max_bytes_help: >
-        A probed icon larger than this is discarded. Multi-resolution .ico files
-        are routinely tens of kilobytes for an 18-pixel slot. Default 204800
-        (200 KB). Only applies to probed icons; an icon the page declares itself
-        is hot-linked whatever its size.
+        Site icons larger than this are not shown. Every icon is measured once,
+        server-side, and the result is remembered — what a page declares about
+        its icons does not predict their weight, and a single logo standing in
+        for a favicon can run to hundreds of kilobytes for an 18-pixel slot.
+        When the best icon is too heavy the next best is tried. Default 32768
+        (32 KB), which clears the 95th percentile of real icons.
       user_agents: Fetcher identities
       user_agents_help: >
         One User-Agent per line, most preferred first. The first is used for every

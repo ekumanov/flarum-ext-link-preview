@@ -42,21 +42,46 @@ final class IconPicker
      *                         which pages get wrong (several production rows
      *                         claim http:// in og:url while serving https)
      */
-    public function pick(mixed $icons, string $finalUrl): ?string
+    public function pick(mixed $icons, string $finalUrl, ?int $maxBytes = null): ?string
+    {
+        return $this->rank($icons, $finalUrl, $maxBytes)[0]['url'] ?? null;
+    }
+
+    /**
+     * Every usable candidate, best first. Callers that need to write back to
+     * the stored list (IconResolver, recording a measured size) get each
+     * candidate's index in the original `icons` array alongside its URL.
+     *
+     * @param  ?int $maxBytes when given, a candidate whose size has already
+     *              been measured and exceeds this is dropped. Candidates with
+     *              no recorded size are kept — most stored rows pre-date
+     *              measurement and dropping them would blank their cards.
+     * @return list<array{url:string,index:int}>
+     */
+    public function rank(mixed $icons, string $finalUrl, ?int $maxBytes = null): array
     {
         if (! is_array($icons) || $icons === []) {
-            return null;
+            return [];
         }
 
         $base = parse_url($finalUrl);
         if (! is_array($base) || ! isset($base['host'])) {
-            return null;
+            return [];
         }
 
         $candidates = [];
 
-        foreach ($icons as $icon) {
+        foreach ($icons as $index => $icon) {
             if (! is_array($icon)) {
+                continue;
+            }
+
+            // Measured and found wanting: either the origin gave us something
+            // that isn't a usable image, or it is too heavy for an 18px slot.
+            if (($icon['bad'] ?? false) === true) {
+                continue;
+            }
+            if ($maxBytes !== null && isset($icon['bytes']) && (int) $icon['bytes'] > $maxBytes) {
                 continue;
             }
 
@@ -73,6 +98,7 @@ final class IconPicker
             $type = is_string($icon['type'] ?? null) ? strtolower(trim($icon['type'])) : '';
 
             $candidates[] = [
+                'index' => $index,
                 'url' => $url,
                 // A candidate that was already https outranks one we had to
                 // upgrade — see rankScheme(). Recorded before the upgrade so
@@ -84,7 +110,7 @@ final class IconPicker
         }
 
         if ($candidates === []) {
-            return null;
+            return [];
         }
 
         usort($candidates, function (array $a, array $b): int {
@@ -93,7 +119,10 @@ final class IconPicker
                 ?: self::rankType($a['type']) <=> self::rankType($b['type']);
         });
 
-        return self::forceHttps($candidates[0]['url']);
+        return array_map(
+            fn (array $c) => ['url' => self::forceHttps($c['url']), 'index' => $c['index']],
+            $candidates,
+        );
     }
 
     /**

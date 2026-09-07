@@ -6,6 +6,7 @@ use Carbon\Carbon;
 use Ekumanov\LinkPreview\Preview;
 use Ekumanov\LinkPreview\Fetch\FailurePolicy;
 use Ekumanov\LinkPreview\Fetch\FaviconProbe;
+use Ekumanov\LinkPreview\Fetch\IconResolver;
 use Ekumanov\LinkPreview\Http\SafeHttpClient;
 use Ekumanov\LinkPreview\Listener\UrlExtractor;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
@@ -49,6 +50,7 @@ class FetchPreviewJob extends AbstractJob
         LoggerInterface $log,
         LocalDiscussionResolver $localResolver,
         FaviconProbe $faviconProbe,
+        IconResolver $iconResolver,
     ): void {
         $preview = Preview::find($this->previewId);
         if ($preview === null) {
@@ -163,7 +165,13 @@ class FetchPreviewJob extends AbstractJob
                 $preview->fallback = $fb['fallback'];
             }
             if ($fb['icons'] !== []) {
-                $preview->icons = $fb['icons'];
+                // Measure what the winning icon actually weighs before any
+                // reader is asked to download it — declared metadata does not
+                // predict bytes. Skipped entirely when the site mark is off,
+                // so the requests are only spent where they're used.
+                $preview->icons = $settings->showFavicons()
+                    ? $this->validateIcons($iconResolver, $fb['icons'], $preview, $settings, $log)
+                    : $fb['icons'];
             } elseif ($preview->icons === null && $settings->iconProbe()) {
                 // NULL means "never looked"; an empty array means "looked and
                 // found nothing". Writing [] either way is what makes this one
@@ -197,6 +205,35 @@ class FetchPreviewJob extends AbstractJob
             ]);
 
             return null;
+        }
+    }
+
+    /**
+     * Best-effort like the probe: if measuring blows up, keep the icons we
+     * parsed rather than losing them.
+     *
+     * @param  list<array<string,mixed>> $icons
+     * @return list<array<string,mixed>>
+     */
+    private function validateIcons(
+        IconResolver $resolver,
+        array $icons,
+        Preview $preview,
+        SettingsRepository $settings,
+        LoggerInterface $log,
+    ): array {
+        try {
+            return $resolver->validate(
+                $icons,
+                $preview->final_url ?: $preview->url,
+                $settings->faviconMaxBytes(),
+            )['icons'];
+        } catch (Throwable $e) {
+            $log->debug('link-preview icon validation failed', [
+                'preview_id' => $preview->id, 'url' => $preview->url, 'err' => $e->getMessage(),
+            ]);
+
+            return $icons;
         }
     }
 }

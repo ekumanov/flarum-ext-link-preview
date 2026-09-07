@@ -323,6 +323,10 @@ function buildSiteMark(src) {
     img.src = src;
     img.alt = '';
     img.loading = 'lazy';
+    // An 18px decoration should never compete with the post's own images for
+    // bandwidth or main-thread decode time.
+    img.fetchPriority = 'low';
+    img.decoding = 'async';
     img.referrerPolicy = 'no-referrer';
     img.addEventListener('error', () => img.remove(), { once: true }); // drop silently, keep the slot
     slot.appendChild(img);

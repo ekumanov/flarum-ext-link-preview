@@ -74,6 +74,48 @@ final class PostResourceFieldsTest extends TestCase
         $this->assertSame('https://example.com/favicon.ico', $payload['favicon']);
     }
 
+    public function test_favicon_is_null_when_it_is_the_same_image_as_the_thumbnail(): void
+    {
+        // Measured live: a site declaring its logo as both og:image and
+        // favicon rendered the same picture twice in one card.
+        $preview = $this->preview(icons: [['href' => 'https://example.com/logo-512.png']]);
+        $preview->opengraph = [
+            'title' => 'An article',
+            'images' => [['url' => 'https://example.com/logo-512.png']],
+        ];
+
+        $payload = $this->build($preview);
+
+        $this->assertSame('https://example.com/logo-512.png', $payload['image']);
+        $this->assertNull($payload['favicon']);
+    }
+
+    public function test_an_icon_measured_over_the_ceiling_is_not_served(): void
+    {
+        $payload = $this->build($this->preview(icons: [
+            ['href' => '/huge.png', 'bytes' => 291728],
+        ]));
+
+        $this->assertNull($payload['favicon']);
+    }
+
+    public function test_an_icon_measured_under_the_ceiling_is_served(): void
+    {
+        $payload = $this->build($this->preview(icons: [
+            ['href' => '/small.png', 'bytes' => 4000],
+        ]));
+
+        $this->assertSame('https://example.com/small.png', $payload['favicon']);
+    }
+
+    public function test_an_unmeasured_icon_is_still_served(): void
+    {
+        // Rows stored before measurement existed must not lose their marks.
+        $payload = $this->build($this->preview(icons: [['href' => '/legacy.ico']]));
+
+        $this->assertSame('https://example.com/legacy.ico', $payload['favicon']);
+    }
+
     public function test_relative_icons_resolve_against_final_url(): void
     {
         $preview = $this->preview(icons: [['href' => '/favicon.ico']]);

@@ -105,13 +105,13 @@ final class SettingsRepository
     }
 
     /**
-     * Size ceiling for a probed icon. A multi-resolution .ico can be tens of
-     * kilobytes; anything past this is not worth putting in front of readers
-     * for an 18px slot. Default 200 KB.
+     * Size ceiling for a site icon, probed or declared. Measured across a live
+     * install's icons: median 4 KB, p95 17 KB — but a tail reaching 292 KB for
+     * an 18px slot. 32 KB clears the p95 comfortably and cuts the tail.
      */
     public function faviconMaxBytes(): int
     {
-        return $this->intSetting('favicon_max_bytes', 204800);
+        return $this->intSetting('favicon_max_bytes', 32768);
     }
 
     /**

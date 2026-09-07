@@ -134,7 +134,7 @@ class PostResourceFields
             // the front-end reserves whether or not this is set, so a card that
             // gains one shifts nothing. A brand image is already occupying
             // that box, so the two are mutually exclusive.
-            'favicon' => $isBrand ? null : $this->favicon($preview, $clickUrl),
+            'favicon' => $isBrand ? null : $this->favicon($preview, $clickUrl, $image['url'] ?? null),
             'siteName' => (string) $siteName,
             'domain' => $domain,
             'dismissed' => $dismissed,
@@ -149,13 +149,20 @@ class PostResourceFields
      * it reaches a reader, so ~2390 existing production rows light up with no
      * re-fetching at all.
      */
-    private function favicon(Preview $preview, string $baseUrl): ?string
+    private function favicon(Preview $preview, string $baseUrl, ?string $thumbnail): ?string
     {
         if (! $this->settings->showFavicons()) {
             return null;
         }
 
-        return $this->icons->pick($preview->icons, $baseUrl);
+        $favicon = $this->icons->pick($preview->icons, $baseUrl, $this->settings->faviconMaxBytes());
+
+        // Some sites declare their logo as both og:image and favicon, which
+        // renders the same picture twice in one card — once full width, once
+        // at 18px. The browser only downloads it once, so this is redundancy
+        // rather than weight, but the thumbnail is the more informative of the
+        // two and the site name already labels the card.
+        return $favicon !== null && $favicon === $thumbnail ? null : $favicon;
     }
 
     /**

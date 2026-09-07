@@ -81,7 +81,7 @@ app.initializers.add('ekumanov/link-preview', () => {
             label: app.translator.trans('ekumanov-link-preview.admin.settings.favicon_max_bytes'),
             help: app.translator.trans('ekumanov-link-preview.admin.settings.favicon_max_bytes_help'),
             min: 0,
-            default: 204800, // 200 KB
+            default: 32768, // 32 KB
         },
         50
     );

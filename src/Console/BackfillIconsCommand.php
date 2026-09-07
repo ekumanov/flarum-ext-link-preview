@@ -3,6 +3,7 @@
 namespace Ekumanov\LinkPreview\Console;
 
 use Ekumanov\LinkPreview\Fetch\FaviconProbe;
+use Ekumanov\LinkPreview\Fetch\IconResolver;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
 use Ekumanov\LinkPreview\Settings\SettingsRepository;
 use Illuminate\Console\Command;
@@ -34,26 +35,42 @@ use Throwable;
 class BackfillIconsCommand extends Command
 {
     protected $signature = 'link-preview:backfill-icons
-                            {--limit=200 : Maximum rows to probe in one run.}
+                            {--only= : Restrict to one pass: "probe" (rows with no icon) or "validate" (measure stored icons). Default: both.}
+                            {--limit=200 : Maximum rows to touch per pass in one run.}
                             {--host= : Only rows whose final URL is on this host (substring match).}
                             {--delay=500 : Milliseconds to wait between probes. Keep this non-zero.}
                             {--force : Run even when the "Probe for /favicon.ico" setting is off.}
                             {--dry-run : Show what would be probed without making any request or write.}';
 
-    protected $description = 'Probe /favicon.ico for previews that render a card but have no stored icon.';
+    protected $description = 'Give older previews a site icon: measure the ones already stored, and probe /favicon.ico for those that have none.';
 
     public function handle(
         ConnectionInterface $db,
         FaviconProbe $probe,
+        IconResolver $resolver,
         SettingsRepository $settings,
         LocalDiscussionResolver $localResolver,
     ): int {
         $dry = (bool) $this->option('dry-run');
+        $only = strtolower(trim((string) $this->option('only')));
+
+        if ($only !== '' && ! in_array($only, ['probe', 'validate'], true)) {
+            $this->error('--only must be "probe" or "validate".');
+            return 1;
+        }
 
         if (! $settings->iconProbe() && ! $this->option('force')) {
             $this->error('Icon probing is switched off for this forum (Link Preview → "Probe for /favicon.ico").');
             $this->line('Enable it, or pass --force to run this backfill anyway.');
             return 1;
+        }
+
+        if ($only !== 'probe') {
+            $this->validatePass($db, $resolver, $localResolver, $settings, $dry);
+        }
+
+        if ($only === 'validate') {
+            return 0;
         }
 
         $limit = max(1, (int) $this->option('limit'));
@@ -179,5 +196,104 @@ class BackfillIconsCommand extends Command
         $title = is_array($decoded) ? ($decoded['title'] ?? null) : null;
 
         return is_string($title) && trim($title) !== '' ? $title : null;
+    }
+
+    /**
+     * Measure the icons already stored on rows that render a card, so the
+     * oversized ones stop being served. Only touches the `icons` column, and
+     * only rows whose winning icon has never been measured — re-running is
+     * cheap and idempotent.
+     */
+    private function validatePass(
+        ConnectionInterface $db,
+        IconResolver $resolver,
+        LocalDiscussionResolver $localResolver,
+        SettingsRepository $settings,
+        bool $dry,
+    ): void {
+        $limit = max(1, (int) $this->option('limit'));
+        $hostFilter = strtolower(trim((string) $this->option('host')));
+        $delayUs = max(0, (int) $this->option('delay')) * 1000;
+        $maxBytes = $settings->faviconMaxBytes();
+
+        $query = $db->table('ekumanov_link_previews')
+            ->select('id', 'url', 'final_url', 'mime', 'opengraph', 'fallback', 'icons')
+            ->where('http_status', 200)
+            ->whereNull('error')
+            ->whereNotNull('retrieved_at')
+            ->whereNotNull('icons')
+            ->where('icons', '!=', '[]')
+            // Rows whose stored icons carry no measurement yet. A crude LIKE is
+            // enough: it only has to narrow the scan, the real check is below.
+            ->where('icons', 'not like', '%"bytes"%')
+            ->orderBy('id', 'asc');
+
+        if ($hostFilter !== '') {
+            $query->where(fn ($q) => $q->where('final_url', 'like', '%'.$hostFilter.'%')
+                ->orWhere('url', 'like', '%'.$hostFilter.'%'));
+        }
+
+        $rows = $query->limit($limit * 4)->get();
+
+        $stats = ['considered' => 0, 'skipped' => 0, 'measured' => 0, 'oversized' => 0, 'unusable' => 0, 'requests' => 0, 'errors' => 0];
+        $done = 0;
+
+        $this->info('── validating stored icons');
+
+        foreach ($rows as $row) {
+            if ($done >= $limit) {
+                break;
+            }
+
+            $stats['considered']++;
+            $target = $row->final_url ?: $row->url;
+
+            $icons = json_decode((string) $row->icons, true);
+            if (! is_array($icons) || $icons === [] || ! $this->rendersACard($row, $localResolver, $hostFilter, $target)) {
+                $stats['skipped']++;
+                continue;
+            }
+
+            $done++;
+
+            if ($dry) {
+                $this->line('  would measure '.$target);
+                continue;
+            }
+
+            try {
+                $out = $resolver->validate($icons, $target, $maxBytes);
+            } catch (Throwable $e) {
+                $stats['errors']++;
+                $this->warn("preview {$row->id}: {$e->getMessage()}");
+                continue;
+            }
+
+            $stats['requests'] += $out['checks'];
+
+            if (! $out['changed']) {
+                continue;
+            }
+
+            $stats['measured']++;
+            foreach ($out['icons'] as $icon) {
+                if (($icon['bad'] ?? false) === true) {
+                    $stats['unusable']++;
+                } elseif (isset($icon['bytes']) && (int) $icon['bytes'] > $maxBytes) {
+                    $stats['oversized']++;
+                    $this->line(sprintf('  dropped %s KB  %s', round(((int) $icon['bytes']) / 1024), $icon['href']));
+                }
+            }
+
+            $db->table('ekumanov_link_previews')
+                ->where('id', $row->id)
+                ->update(['icons' => json_encode($out['icons'])]);
+
+            if ($delayUs > 0) {
+                usleep($delayUs);
+            }
+        }
+
+        $this->info('Validate pass: '.json_encode($stats));
     }
 }

@@ -275,7 +275,7 @@ INSERT INTO settings (`key`, value) VALUES
   ('ekumanov-link-preview.user_agents',        ''),
   ('ekumanov-link-preview.show_favicons',      '1'),
   ('ekumanov-link-preview.icon_probe',         '1'),
-  ('ekumanov-link-preview.favicon_max_bytes',  '204800')  -- 200 KB
+  ('ekumanov-link-preview.favicon_max_bytes',  '32768')   -- 32 KB
 ON DUPLICATE KEY UPDATE value = VALUES(value);
 ```
 
@@ -295,6 +295,19 @@ the image loads, so a blocked or 404'd icon shifts nothing.
 page's own origin for `/favicon.ico`, once per link, and stores the result if it
 comes back as an image under `favicon_max_bytes`. A miss is remembered, so the
 same site is never asked twice.
+
+**Every icon is weighed before a reader sees it.** What a page declares about
+its icons does not predict their size: measured across a live install, the
+median icon is 4 KB but the tail reaches a 292 KB logo standing in for a favicon
+and a 216 KB multi-resolution `.ico`, both of which every metadata-based
+heuristic ranks perfectly well. So the chosen icon is fetched once, server-side,
+at preview-fetch time and its size recorded in the `icons` column; anything over
+`favicon_max_bytes` is never chosen again and the next-best candidate is tried
+instead (up to three per page). Rows stored before this existed keep their marks
+until `link-preview:backfill-icons` measures them.
+
+A site that declares its logo as both `og:image` and favicon would render the
+same picture twice in one card; in that case only the thumbnail is kept.
 
 There is deliberately **no third-party favicon service**. Google's
 `s2/favicons` and its equivalents would be a one-line alternative and would also
@@ -385,6 +398,11 @@ a stored icon need nothing; they light up on the next render. `--dry-run`,
 `--limit=N`, `--host=example.com`, and `--delay=` (milliseconds between
 requests, default 500) are supported. Not scheduled: new links get their probe
 inside the fetch job.
+
+It runs two passes. The **validate** pass measures icons that are already stored
+but have never been weighed, dropping any over `favicon_max_bytes`; the
+**probe** pass covers rows with no icon at all. `--only=validate` or
+`--only=probe` runs just one of them.
 
 ## Development
 
