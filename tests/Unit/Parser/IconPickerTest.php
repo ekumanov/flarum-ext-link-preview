@@ -269,6 +269,58 @@ final class IconPickerTest extends TestCase
         );
     }
 
+    // ─── brand-mark detection ─────────────────────────────────────────
+
+    public function test_matches_an_og_image_against_a_relative_icon_href(): void
+    {
+        $icons = [['href' => 'assets/logo-512.png']];
+
+        $this->assertTrue($this->picker->matchesAnyIcon(
+            $icons, 'https://example.com/', 'https://example.com/assets/logo-512.png'
+        ));
+    }
+
+    public function test_matches_even_when_the_icon_is_too_heavy_to_serve(): void
+    {
+        // The whole point: an icon rejected for weight is still the site logo.
+        $icons = [['href' => 'assets/logo-512.png', 'bytes' => 291728]];
+
+        $this->assertTrue($this->picker->matchesAnyIcon(
+            $icons, 'https://example.com/', 'https://example.com/assets/logo-512.png'
+        ));
+        $this->assertNull($this->picker->pick($icons, 'https://example.com/', 32768));
+    }
+
+    public function test_matches_any_declared_icon_not_just_the_best(): void
+    {
+        $icons = [
+            ['href' => '/favicon-32x32.png', 'sizes' => [['width' => 32, 'height' => 32]]],
+            ['href' => '/brand.png'],
+        ];
+
+        $this->assertTrue($this->picker->matchesAnyIcon($icons, 'https://example.com/', 'https://example.com/brand.png'));
+    }
+
+    public function test_does_not_match_an_unrelated_hero_image(): void
+    {
+        $icons = [['href' => '/favicon.ico']];
+
+        $this->assertFalse($this->picker->matchesAnyIcon($icons, 'https://example.com/', 'https://example.com/hero.jpg'));
+    }
+
+    public function test_matches_across_an_http_declaration(): void
+    {
+        $icons = [['href' => 'http://example.com/logo.png']];
+
+        $this->assertTrue($this->picker->matchesAnyIcon($icons, 'https://example.com/', 'https://example.com/logo.png'));
+    }
+
+    public function test_matches_nothing_when_there_are_no_icons(): void
+    {
+        $this->assertFalse($this->picker->matchesAnyIcon(null, 'https://example.com/', 'https://example.com/x.png'));
+        $this->assertFalse($this->picker->matchesAnyIcon([], 'https://example.com/', 'https://example.com/x.png'));
+    }
+
     public function test_a_probed_icon_is_picked_like_any_other(): void
     {
         // Phase 3 writes {"href": "...", "probed": true}; the extra key must

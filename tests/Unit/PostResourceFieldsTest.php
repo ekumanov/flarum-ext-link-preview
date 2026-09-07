@@ -117,6 +117,42 @@ final class PostResourceFieldsTest extends TestCase
         $this->assertSame('https://example.com/legacy.ico', $payload['favicon']);
     }
 
+    public function test_an_oversized_logo_leaves_the_card_with_no_picture(): void
+    {
+        // Measured live (sympiano.com): one 292 KB logo declared as both the
+        // og:image and the favicon. Too heavy for the 18px slot and meaningless
+        // in the banner, so the card gets no picture at all — the site name
+        // already says what the logo would.
+        $preview = $this->preview(icons: [
+            ['href' => 'assets/logo-512.png', 'bytes' => 291728],
+        ]);
+        $preview->final_url = 'https://example.com/';
+        $preview->opengraph = [
+            'title' => 'An article',
+            'images' => [['url' => 'https://example.com/assets/logo-512.png']],
+        ];
+
+        $payload = $this->build($preview);
+
+        $this->assertNull($payload['image'], 'a logo must never fill the banner');
+        $this->assertNull($payload['favicon'], 'and must not be squeezed into the 18px slot either');
+    }
+
+    public function test_a_light_logo_declared_relatively_still_becomes_the_site_mark(): void
+    {
+        $preview = $this->preview(icons: [['href' => 'assets/logo.png', 'bytes' => 4000]]);
+        $preview->final_url = 'https://example.com/';
+        $preview->opengraph = [
+            'title' => 'An article',
+            'images' => [['url' => 'https://example.com/assets/logo.png']],
+        ];
+
+        $payload = $this->build($preview);
+
+        $this->assertNull($payload['image']);
+        $this->assertSame('https://example.com/assets/logo.png', $payload['favicon']);
+    }
+
     public function test_relative_icons_resolve_against_final_url(): void
     {
         $preview = $this->preview(icons: [['href' => '/favicon.ico']]);

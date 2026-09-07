@@ -126,6 +126,42 @@ final class IconPicker
     }
 
     /**
+     * Is this URL one of the icons the page declared?
+     *
+     * Deliberately ignores every filter `rank()` applies. Whether an og:image
+     * is really just the site's logo has nothing to do with whether that logo
+     * is small enough to serve — and the heaviest logos are exactly the ones
+     * the ceiling rejects, so asking the filtered list would miss precisely
+     * the cases worth catching.
+     */
+    public function matchesAnyIcon(mixed $icons, string $finalUrl, string $url): bool
+    {
+        if (! is_array($icons) || $icons === []) {
+            return false;
+        }
+
+        $base = parse_url($finalUrl);
+        if (! is_array($base) || ! isset($base['host'])) {
+            return false;
+        }
+
+        $needle = self::forceHttps($url);
+
+        foreach ($icons as $icon) {
+            $href = is_array($icon) && is_string($icon['href'] ?? null) ? trim($icon['href']) : '';
+            if ($href === '') {
+                continue;
+            }
+            $resolved = self::absolutize($href, $base);
+            if ($resolved !== null && self::forceHttps($resolved) === $needle) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Prefer a candidate that was served over https already. We still upgrade
      * a lone http:// href rather than dropping it (63 production rows would
      * otherwise lose their mark) — a browser would block it as mixed content

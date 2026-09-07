@@ -117,22 +117,32 @@ class PostResourceFields
         $imageUrl = $image['url'] ?? null;
         $favicon = $this->favicon($preview, $clickUrl);
 
-        // A site whose og:image IS its favicon has handed us a brand mark, not
-        // a picture of anything. Blown up to fill the card's image slot it is
-        // just a magnified logo — and on a phone, where that slot is a
-        // full-width 1.91:1 banner, a square logo loses its top and bottom to
-        // the crop. Treated as a brand mark it becomes the 18px mark beside
-        // the site name and the card collapses to the compact form every
-        // messenger uses for a link with no real thumbnail. Same treatment the
-        // forum's own share logo already gets on self-links.
-        $isBrand = (bool) ($image['brand'] ?? false)
-            || ($favicon !== null && $imageUrl !== null && $favicon === $imageUrl);
+        // A site that declares one file as both its og:image and its favicon
+        // has handed us a brand mark, not a picture of anything. Blown up to
+        // fill the card's image slot it is just a magnified logo — and on a
+        // phone, where that slot is a full-width 1.91:1 banner, a square logo
+        // loses its top and bottom to the crop. Treated as a brand mark it
+        // becomes the 18px mark beside the site name and the card collapses to
+        // the compact form every messenger uses for a link with no real
+        // thumbnail.
+        //
+        // Matched against the page's *declared* icons rather than against the
+        // icon we settled on: an icon rejected for weight is still the site's
+        // logo, and those are exactly the ones worth catching.
+        $isOwnIcon = $imageUrl !== null
+            && $this->icons->matchesAnyIcon($preview->icons, $clickUrl, $imageUrl);
 
-        // In the brand case the picture *is* the site mark: it fills the 18px
-        // slot and the big slot stays empty, so the same image is never sent
-        // twice. A self-link has a brand image but no stored icons, which is
-        // why the image URL stands in for the favicon here.
-        $siteMark = $isBrand ? ($favicon ?? $imageUrl) : $favicon;
+        // The forum's own share logo on a self-link. Served unconditionally —
+        // it is our asset on our own domain, not something we hot-link.
+        $isSelfBrand = (bool) ($image['brand'] ?? false);
+
+        // A brand mark never fills the big slot. It fills the 18px one when it
+        // is light enough to be worth serving, and otherwise the card simply
+        // has no picture: a 292 KB logo squeezed into an 18-pixel box would be
+        // the worst of both, and the site name already says everything that
+        // logo would.
+        $siteMark = $isSelfBrand ? ($favicon ?? $imageUrl) : $favicon;
+        $isBrand = $isSelfBrand || $isOwnIcon;
 
         return [
             'previewId' => (int) $preview->id,
