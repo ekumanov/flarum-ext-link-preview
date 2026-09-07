@@ -12,6 +12,16 @@ use Illuminate\Support\Arr;
 
 class PostResourceFields
 {
+    /**
+     * Below this declared width an image cannot fill the card's mobile banner
+     * (a phone viewport is 360-430 CSS px) without being upscaled. Sampled on
+     * a live install, what sits under it is unambiguous — 64px GitLab cards,
+     * 96px file-type glyphs, 160px Dropbox icons — while genuine square
+     * content, like 500px album artwork, sits comfortably above it. So this is
+     * the "never upscale" guideline, not a guess about what is a logo.
+     */
+    private const MIN_BANNER_WIDTH = 400;
+
     private const YOUTUBE_HOSTS = [
         'youtube.com',
         'www.youtube.com',
@@ -144,6 +154,11 @@ class PostResourceFields
         $siteMark = $isSelfBrand ? ($favicon ?? $imageUrl) : $favicon;
         $isBrand = $isSelfBrand || $isOwnIcon;
 
+        // A picture the source declares as smaller than the banner keeps the
+        // compact layout on a phone rather than being blown up to full width.
+        $declaredWidth = (int) ($image['width'] ?? 0);
+        $isSmall = $declaredWidth > 0 && $declaredWidth < self::MIN_BANNER_WIDTH;
+
         return [
             'previewId' => (int) $preview->id,
             'postId' => (int) $post->id,
@@ -153,6 +168,8 @@ class PostResourceFields
             'title' => (string) $title,
             'description' => $description ? (string) $description : null,
             'image' => $isBrand ? null : $imageUrl,
+            // Render this thumbnail compact rather than as a full-width banner.
+            'imageSmall' => ! $isBrand && $isSmall,
             // The site mark. Never fills the big image slot (see firstImage's
             // docblock) — it goes in the 18x18 box beside the site name, which
             // the front-end reserves whether or not this is set, so a card that
@@ -190,14 +207,20 @@ class PostResourceFields
      * hero image (blurry cards + a guest privacy leak). The current
      * HtmlFallbackParser no longer writes images there.
      *
-     * @return array{url:string,brand:bool}|null
+     * @return array{url:string,brand:bool,width:int}|null
      */
     private function firstImage(array $og): ?array
     {
         foreach (Arr::get($og, 'images') ?: [] as $image) {
             $src = Arr::get($image, 'secure_url') ?: Arr::get($image, 'url');
             if ($src) {
-                return ['url' => (string) $src, 'brand' => (bool) Arr::get($image, 'brand')];
+                return [
+                    'url' => (string) $src,
+                    'brand' => (bool) Arr::get($image, 'brand'),
+                    // Only what the page declared. We do not fetch the image to
+                    // find out — see the README on why there is no image proxy.
+                    'width' => (int) Arr::get($image, 'width'),
+                ];
             }
         }
 

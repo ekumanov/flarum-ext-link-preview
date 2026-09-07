@@ -153,6 +153,46 @@ final class PostResourceFieldsTest extends TestCase
         $this->assertSame('https://example.com/assets/logo.png', $payload['favicon']);
     }
 
+    public function test_flags_an_image_too_small_for_the_banner(): void
+    {
+        // Sampled live: 64px GitLab cards, 96px file glyphs, 160px Dropbox
+        // icons. None can fill a phone-width banner without upscaling.
+        $preview = $this->preview(icons: null);
+        $preview->opengraph = [
+            'title' => 'An article',
+            'images' => [['url' => 'https://example.com/icon.png', 'width' => 160, 'height' => 160]],
+        ];
+
+        $payload = $this->build($preview);
+
+        $this->assertSame('https://example.com/icon.png', $payload['image']);
+        $this->assertTrue($payload['imageSmall']);
+    }
+
+    public function test_does_not_flag_square_artwork_large_enough_to_display(): void
+    {
+        // 500x500 SoundCloud artwork is real content, not a logo — it must keep
+        // the banner. This is why the rule is a size cut, not a shape cut.
+        $preview = $this->preview(icons: null);
+        $preview->opengraph = [
+            'title' => 'A track',
+            'images' => [['url' => 'https://example.com/art.jpg', 'width' => 500, 'height' => 500]],
+        ];
+
+        $this->assertFalse($this->build($preview)['imageSmall']);
+    }
+
+    public function test_does_not_flag_an_image_with_no_declared_width(): void
+    {
+        $preview = $this->preview(icons: null);
+        $preview->opengraph = [
+            'title' => 'An article',
+            'images' => [['url' => 'https://example.com/hero.jpg']],
+        ];
+
+        $this->assertFalse($this->build($preview)['imageSmall']);
+    }
+
     public function test_relative_icons_resolve_against_final_url(): void
     {
         $preview = $this->preview(icons: [['href' => '/favicon.ico']]);

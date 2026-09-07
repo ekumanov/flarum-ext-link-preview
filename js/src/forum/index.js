@@ -377,6 +377,12 @@ function buildCard(preview) {
     const siteMark = preview.favicon;
 
     if (preview.image) {
+        // Declared smaller than the phone banner: keep the compact row layout
+        // rather than upscaling it to full width. Decided server-side so it
+        // applies at first paint — discovering it on load would mean changing
+        // the card's shape after it is already on screen.
+        if (preview.imageSmall) card.classList.add(CARD_CLASS + '--compact');
+
         const img = document.createElement('img');
         img.className = CARD_CLASS + '-image';
         img.src = preview.image;

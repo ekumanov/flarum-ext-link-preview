@@ -303,4 +303,16 @@
     .LinkPreview-card-image--letterbox {
         object-fit: contain;
     }
+
+    // A picture the source declares as narrower than this banner would only be
+    // upscaled to fill it. Keep the desktop-style row instead: a small square
+    // thumbnail beside the text, which is what every messenger falls back to.
+    .LinkPreview-card--compact {
+        flex-direction: row;
+
+        .LinkPreview-card-image {
+            width: 72px;
+            aspect-ratio: 1 / 1;
+        }
+    }
 }
