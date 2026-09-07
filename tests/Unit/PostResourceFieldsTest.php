@@ -43,11 +43,12 @@ final class PostResourceFieldsTest extends TestCase
         $this->assertNull($payload['favicon'], 'off must remove the URL from the payload, not merely hide it');
     }
 
-    public function test_favicon_is_null_when_the_brand_image_wins(): void
+    public function test_a_self_link_brand_image_becomes_the_site_mark(): void
     {
-        // A self-link's brand logo already occupies the site-mark box; the two
-        // must never both render.
-        $preview = $this->preview(icons: [['href' => '/favicon.ico']]);
+        // A self-link carries a brand image and no stored icons. The logo goes
+        // in the 18px slot; the big slot stays empty rather than showing a
+        // magnified logo.
+        $preview = $this->preview(icons: null);
         $preview->opengraph = [
             'title' => 'A discussion',
             'images' => [['url' => 'https://example.com/logo.png', 'brand' => true]],
@@ -55,8 +56,25 @@ final class PostResourceFieldsTest extends TestCase
 
         $payload = $this->build($preview);
 
-        $this->assertSame('contain', $payload['imageFit']);
-        $this->assertNull($payload['favicon']);
+        $this->assertNull($payload['image'], 'a brand mark must not fill the thumbnail slot');
+        $this->assertSame('https://example.com/logo.png', $payload['favicon']);
+    }
+
+    public function test_an_og_image_that_is_the_favicon_is_treated_as_a_brand_mark(): void
+    {
+        // Measured live (sympiano.com): the site declares one logo as both its
+        // og:image and its favicon. Filling the card's banner with it produced
+        // a giant cropped letter on mobile.
+        $preview = $this->preview(icons: [['href' => 'https://example.com/logo-512.png']]);
+        $preview->opengraph = [
+            'title' => 'An article',
+            'images' => [['url' => 'https://example.com/logo-512.png']],
+        ];
+
+        $payload = $this->build($preview);
+
+        $this->assertNull($payload['image'], 'the logo must not be blown up into the banner');
+        $this->assertSame('https://example.com/logo-512.png', $payload['favicon']);
     }
 
     public function test_a_real_thumbnail_and_a_favicon_coexist(): void
@@ -70,24 +88,7 @@ final class PostResourceFieldsTest extends TestCase
         $payload = $this->build($preview);
 
         $this->assertSame('https://example.com/hero.jpg', $payload['image']);
-        $this->assertNull($payload['imageFit']);
         $this->assertSame('https://example.com/favicon.ico', $payload['favicon']);
-    }
-
-    public function test_favicon_is_null_when_it_is_the_same_image_as_the_thumbnail(): void
-    {
-        // Measured live: a site declaring its logo as both og:image and
-        // favicon rendered the same picture twice in one card.
-        $preview = $this->preview(icons: [['href' => 'https://example.com/logo-512.png']]);
-        $preview->opengraph = [
-            'title' => 'An article',
-            'images' => [['url' => 'https://example.com/logo-512.png']],
-        ];
-
-        $payload = $this->build($preview);
-
-        $this->assertSame('https://example.com/logo-512.png', $payload['image']);
-        $this->assertNull($payload['favicon']);
     }
 
     public function test_an_icon_measured_over_the_ceiling_is_not_served(): void

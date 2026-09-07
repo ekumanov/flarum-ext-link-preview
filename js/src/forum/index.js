@@ -5,6 +5,10 @@ import CommentPost from 'flarum/forum/components/CommentPost';
 const CARD_CLASS = 'LinkPreview-card';
 const WRAPPER_CLASS = 'LinkPreview-card-wrapper';
 const HOVER_CLASS = 'LinkPreview-hovercard';
+// Below this width:height an image is not a banner, and cropping it to one
+// costs more than letterboxing it. Matches the OG standard of 1.91:1 with a
+// little slack.
+const WIDE_RATIO = 1.5;
 const TOGGLE_CLASS = 'LinkPreview-previewToggle';
 const SIG_ATTR = 'data-lp-sig';
 const COUNT_ATTR = 'data-lp-n';
@@ -366,25 +370,34 @@ function buildCard(preview) {
     const previewLabel = trans('preview_aria_prefix', 'Link preview');
     card.setAttribute('aria-label', `${previewLabel}: ${labelParts.join(' — ')}`);
 
-    // A brand/logo image (the forum share image on self-links, flagged
-    // `imageFit:'contain'`) is rendered as a small favicon next to the site
-    // name rather than a full-size thumbnail — self-links carry no per-discussion
-    // content image, so the big slot would just be a blown-up logo.
-    const isBrandLogo = !!preview.image && preview.imageFit === 'contain';
+    // The server decides which slot a picture belongs in: a brand mark (the
+    // forum's share logo on a self-link, or a site whose og:image is its own
+    // favicon) arrives as `favicon` with no `image`, so the card renders in
+    // its compact form. A real content thumbnail arrives as `image`.
+    const siteMark = preview.favicon;
 
-    // One site mark, never two: the brand image wins where it exists, and the
-    // page's own favicon fills the same box everywhere else. The server already
-    // enforces this (it sends no `favicon` alongside a brand image) — repeating
-    // it here keeps the precedence readable at the point it applies.
-    const siteMark = isBrandLogo ? preview.image : preview.favicon;
-
-    if (preview.image && !isBrandLogo) {
+    if (preview.image) {
         const img = document.createElement('img');
         img.className = CARD_CLASS + '-image';
         img.src = preview.image;
         img.alt = ''; // decorative — text content provides the info
         img.loading = 'lazy';
         img.referrerPolicy = 'no-referrer';
+        // On a phone the thumbnail is a full-width 1.91:1 banner, which crops
+        // the top and bottom off anything squarer than that — and 43% of the
+        // images whose dimensions we can see are square or portrait. Switching
+        // this one to `contain` letterboxes it whole instead. Deliberately done
+        // on load rather than up front: `object-fit` never affects layout, so
+        // the box keeps its reserved size and nothing shifts.
+        img.addEventListener(
+            'load',
+            () => {
+                if (img.naturalWidth && img.naturalHeight / img.naturalWidth > 1 / WIDE_RATIO) {
+                    img.classList.add(CARD_CLASS + '-image--letterbox');
+                }
+            },
+            { once: true }
+        );
         img.addEventListener(
             'error',
             () => {

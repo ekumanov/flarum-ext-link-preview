@@ -295,4 +295,12 @@
         width: 100%;
         aspect-ratio: 1.91 / 1;
     }
+
+    // ...but a square or portrait image cropped to 1.91:1 loses its top and
+    // bottom — a logo becomes an unreadable band. The class is added on load
+    // once the real aspect is known; `object-fit` is not a layout property, so
+    // the box keeps the size it already reserved and nothing shifts.
+    .LinkPreview-card-image--letterbox {
+        object-fit: contain;
+    }
 }

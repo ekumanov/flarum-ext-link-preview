@@ -114,7 +114,25 @@ class PostResourceFields
         $description = Arr::get($og, 'description') ?: Arr::get($fallback, 'description');
 
         $image = $this->firstImage($og);
-        $isBrand = (bool) ($image['brand'] ?? false);
+        $imageUrl = $image['url'] ?? null;
+        $favicon = $this->favicon($preview, $clickUrl);
+
+        // A site whose og:image IS its favicon has handed us a brand mark, not
+        // a picture of anything. Blown up to fill the card's image slot it is
+        // just a magnified logo — and on a phone, where that slot is a
+        // full-width 1.91:1 banner, a square logo loses its top and bottom to
+        // the crop. Treated as a brand mark it becomes the 18px mark beside
+        // the site name and the card collapses to the compact form every
+        // messenger uses for a link with no real thumbnail. Same treatment the
+        // forum's own share logo already gets on self-links.
+        $isBrand = (bool) ($image['brand'] ?? false)
+            || ($favicon !== null && $imageUrl !== null && $favicon === $imageUrl);
+
+        // In the brand case the picture *is* the site mark: it fills the 18px
+        // slot and the big slot stays empty, so the same image is never sent
+        // twice. A self-link has a brand image but no stored icons, which is
+        // why the image URL stands in for the favicon here.
+        $siteMark = $isBrand ? ($favicon ?? $imageUrl) : $favicon;
 
         return [
             'previewId' => (int) $preview->id,
@@ -124,17 +142,13 @@ class PostResourceFields
             'finalUrl' => $clickUrl,
             'title' => (string) $title,
             'description' => $description ? (string) $description : null,
-            'image' => $image['url'] ?? null,
-            // A `brand` image (the forum's social share logo on self-links) is
-            // shown as a small favicon next to the site name; a real content
-            // thumbnail fills the image slot (cover crop).
-            'imageFit' => $isBrand ? 'contain' : null,
+            'image' => $isBrand ? null : $imageUrl,
             // The site mark. Never fills the big image slot (see firstImage's
             // docblock) — it goes in the 18x18 box beside the site name, which
             // the front-end reserves whether or not this is set, so a card that
             // gains one shifts nothing. A brand image is already occupying
             // that box, so the two are mutually exclusive.
-            'favicon' => $isBrand ? null : $this->favicon($preview, $clickUrl, $image['url'] ?? null),
+            'favicon' => $siteMark,
             'siteName' => (string) $siteName,
             'domain' => $domain,
             'dismissed' => $dismissed,
@@ -149,20 +163,13 @@ class PostResourceFields
      * it reaches a reader, so ~2390 existing production rows light up with no
      * re-fetching at all.
      */
-    private function favicon(Preview $preview, string $baseUrl, ?string $thumbnail): ?string
+    private function favicon(Preview $preview, string $baseUrl): ?string
     {
         if (! $this->settings->showFavicons()) {
             return null;
         }
 
-        $favicon = $this->icons->pick($preview->icons, $baseUrl, $this->settings->faviconMaxBytes());
-
-        // Some sites declare their logo as both og:image and favicon, which
-        // renders the same picture twice in one card — once full width, once
-        // at 18px. The browser only downloads it once, so this is redundancy
-        // rather than weight, but the thumbnail is the more informative of the
-        // two and the site name already labels the card.
-        return $favicon !== null && $favicon === $thumbnail ? null : $favicon;
+        return $this->icons->pick($preview->icons, $baseUrl, $this->settings->faviconMaxBytes());
     }
 
     /**
