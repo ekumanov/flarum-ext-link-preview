@@ -94,6 +94,13 @@ app.initializers.add('ekumanov/link-preview', () => {
             help: app.translator.trans('ekumanov-link-preview.admin.settings.user_agents_help'),
             placeholder:
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36\nTwitterbot/1.0\nfacebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+            // A textarea defaults to rows=2. This placeholder is three lines,
+            // the first of which wraps to two on its own, so the built-in
+            // chain was rendered clipped inside a two-row box — it read as one
+            // run-on line with the other two identities scrolled out of sight,
+            // and since placeholder text can't be selected the field looked
+            // broken rather than empty. Size the box to its own placeholder.
+            rows: 8,
         },
         40
     );
@@ -105,6 +112,7 @@ app.initializers.add('ekumanov/link-preview', () => {
             label: app.translator.trans('ekumanov-link-preview.admin.settings.whitelist'),
             help: app.translator.trans('ekumanov-link-preview.admin.settings.whitelist_help'),
             placeholder: 'example.com\n*.trusted.org',
+            rows: 4,
         },
         30
     );
@@ -116,6 +124,7 @@ app.initializers.add('ekumanov/link-preview', () => {
             label: app.translator.trans('ekumanov-link-preview.admin.settings.blacklist'),
             help: app.translator.trans('ekumanov-link-preview.admin.settings.blacklist_help'),
             placeholder: 'amazon.com\n*.amazon.com\nebay.com',
+            rows: 4,
         },
         20
     );
