@@ -2,6 +2,7 @@
 
 use Ekumanov\LinkPreview\Api\Controller\DismissPreviewController;
 use Ekumanov\LinkPreview\Api\Controller\PinPreviewController;
+use Ekumanov\LinkPreview\Console\BackfillIconsCommand;
 use Ekumanov\LinkPreview\Console\BackfillPreviewsCommand;
 use Ekumanov\LinkPreview\Console\RefreshSelfLinksCommand;
 use Ekumanov\LinkPreview\Console\RetryFailedPreviewsCommand;
@@ -100,6 +101,9 @@ return [
     (new Extend\Console())
         ->command(SweepStuckPreviewsCommand::class)
         ->command(BackfillPreviewsCommand::class)
+        // One-off catch-up for rows that pre-date icon probing. Deliberately
+        // NOT scheduled — new rows get their probe inside FetchPreviewJob.
+        ->command(BackfillIconsCommand::class)
         ->command(RefreshSelfLinksCommand::class)
         ->command(RetryFailedPreviewsCommand::class)
         ->schedule(SweepStuckPreviewsCommand::class, function (ScheduleEvent $event) {

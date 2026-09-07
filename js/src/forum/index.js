@@ -298,6 +298,38 @@ function buildSkeleton() {
     return card;
 }
 
+/**
+ * The 18x18 mark in front of the site name — the forum's own share logo on a
+ * self-link, otherwise the source page's favicon.
+ *
+ * The image sits inside a fixed-size slot rather than being sized itself, so a
+ * favicon that 404s (or that a reader's blocker eats) leaves the box behind
+ * instead of collapsing it. Dropping the <img> and keeping the slot is the
+ * difference between a blank square and every line of the card jumping left
+ * after the card is already on screen.
+ *
+ * Hot-linked, like the thumbnail beside it and for the same reason: proxying a
+ * 1 KB icon while a 200 KB hero image from the same host stays hot-linked would
+ * close nothing. `no-referrer` still applies, so the source host learns nothing
+ * about which discussion the reader is on.
+ */
+function buildSiteMark(src) {
+    const slot = document.createElement('span');
+    slot.className = CARD_CLASS + '-site-mark';
+    slot.setAttribute('aria-hidden', 'true'); // decorative — site name text follows
+
+    const img = document.createElement('img');
+    img.className = CARD_CLASS + '-site-favicon';
+    img.src = src;
+    img.alt = '';
+    img.loading = 'lazy';
+    img.referrerPolicy = 'no-referrer';
+    img.addEventListener('error', () => img.remove(), { once: true }); // drop silently, keep the slot
+    slot.appendChild(img);
+
+    return slot;
+}
+
 function buildCard(preview) {
     const card = document.createElement('a');
     card.className = CARD_CLASS;
@@ -336,6 +368,12 @@ function buildCard(preview) {
     // content image, so the big slot would just be a blown-up logo.
     const isBrandLogo = !!preview.image && preview.imageFit === 'contain';
 
+    // One site mark, never two: the brand image wins where it exists, and the
+    // page's own favicon fills the same box everywhere else. The server already
+    // enforces this (it sends no `favicon` alongside a brand image) — repeating
+    // it here keeps the precedence readable at the point it applies.
+    const siteMark = isBrandLogo ? preview.image : preview.favicon;
+
     if (preview.image && !isBrandLogo) {
         const img = document.createElement('img');
         img.className = CARD_CLASS + '-image';
@@ -361,16 +399,7 @@ function buildCard(preview) {
 
     const site = document.createElement('div');
     site.className = CARD_CLASS + '-site';
-    if (isBrandLogo) {
-        const fav = document.createElement('img');
-        fav.className = CARD_CLASS + '-site-favicon';
-        fav.src = preview.image;
-        fav.alt = ''; // decorative — site name text follows
-        fav.loading = 'lazy';
-        fav.referrerPolicy = 'no-referrer';
-        fav.addEventListener('error', () => fav.remove(), { once: true }); // drop silently on 404
-        site.appendChild(fav);
-    }
+    if (siteMark) site.appendChild(buildSiteMark(siteMark));
     const siteLabel = document.createElement('span');
     siteLabel.textContent = preview.siteName || preview.domain || '';
     site.appendChild(siteLabel);

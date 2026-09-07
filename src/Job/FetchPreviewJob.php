@@ -5,6 +5,7 @@ namespace Ekumanov\LinkPreview\Job;
 use Carbon\Carbon;
 use Ekumanov\LinkPreview\Preview;
 use Ekumanov\LinkPreview\Fetch\FailurePolicy;
+use Ekumanov\LinkPreview\Fetch\FaviconProbe;
 use Ekumanov\LinkPreview\Http\SafeHttpClient;
 use Ekumanov\LinkPreview\Listener\UrlExtractor;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
@@ -47,6 +48,7 @@ class FetchPreviewJob extends AbstractJob
         SettingsRepository $settings,
         LoggerInterface $log,
         LocalDiscussionResolver $localResolver,
+        FaviconProbe $faviconProbe,
     ): void {
         $preview = Preview::find($this->previewId);
         if ($preview === null) {
@@ -162,9 +164,39 @@ class FetchPreviewJob extends AbstractJob
             }
             if ($fb['icons'] !== []) {
                 $preview->icons = $fb['icons'];
+            } elseif ($preview->icons === null && $settings->iconProbe()) {
+                // NULL means "never looked"; an empty array means "looked and
+                // found nothing". Writing [] either way is what makes this one
+                // probe per row rather than one per fetch attempt — a site with
+                // no favicon is not asked again on every TTL expiry.
+                $probed = $this->probeIcon($faviconProbe, $preview, $settings, $log);
+                $preview->icons = $probed === null ? [] : [$probed];
             }
         }
 
         $preview->save();
+    }
+
+    /**
+     * Best-effort by construction: a probe that throws must not turn a
+     * perfectly good preview into a failed one, and must not consume a retry.
+     *
+     * @return array{href:string,probed:true}|null
+     */
+    private function probeIcon(
+        FaviconProbe $probe,
+        Preview $preview,
+        SettingsRepository $settings,
+        LoggerInterface $log,
+    ): ?array {
+        try {
+            return $probe->probe($preview->final_url ?: $preview->url, $settings->faviconMaxBytes());
+        } catch (Throwable $e) {
+            $log->debug('link-preview favicon probe failed', [
+                'preview_id' => $preview->id, 'url' => $preview->url, 'err' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
     }
 }

@@ -10,6 +10,25 @@ ekumanov-link-preview:
       max_urls_per_post_help: How many URLs the scanner extracts from a single post body. Cards beyond this aren't generated. Default 10.
       whitelist: Hostname whitelist
       whitelist_help: One host per line. When set, ONLY listed hosts get cards. Subdomain wildcards like *.example.com supported; www. prefix normalized.
+      show_favicons: Show site icons on cards
+      show_favicons_help: >
+        Render the linked page's own favicon as a small mark next to the site
+        name on preview cards and hover previews. Icons are hot-linked from the
+        source, exactly like card thumbnails, and sent with no referrer. Off
+        means no icon URL is put in the page at all.
+      icon_probe: Probe for /favicon.ico
+      icon_probe_help: >
+        When a fetched page declares no icon of its own, ask its server once for
+        the conventional /favicon.ico. This is a server-side request to the same
+        host the page came from — no third-party favicon service is used, so
+        readers' browsers never contact anyone new. Tried once per link, never
+        repeated on later fetches.
+      favicon_max_bytes: Max icon size (bytes)
+      favicon_max_bytes_help: >
+        A probed icon larger than this is discarded. Multi-resolution .ico files
+        are routinely tens of kilobytes for an 18-pixel slot. Default 204800
+        (200 KB). Only applies to probed icons; an icon the page declares itself
+        is hot-linked whatever its size.
       user_agents: Fetcher identities
       user_agents_help: >
         One User-Agent per line, most preferred first. The first is used for every

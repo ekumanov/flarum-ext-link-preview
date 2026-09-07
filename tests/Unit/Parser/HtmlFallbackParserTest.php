@@ -75,6 +75,20 @@ HTML;
         $this->assertArrayNotHasKey('sizes', $r['icons'][1]);
     }
 
+    public function test_records_the_rel_so_mask_icons_are_identifiable(): void
+    {
+        $html = <<<'HTML'
+<html><head><title>x</title>
+<link rel="mask-icon" href="https://example.com/mono.svg" color="#000">
+<link rel="icon" href="https://example.com/favicon.ico">
+</head></html>
+HTML;
+        $r = (new HtmlFallbackParser())->parse($html);
+
+        $this->assertSame('mask-icon', $r['icons'][0]['rel']);
+        $this->assertSame('icon', $r['icons'][1]['rel']);
+    }
+
     public function test_icons_with_sizes_any_ignored(): void
     {
         $html = '<html><head><title>x</title><link rel="icon" sizes="any" href="https://example.com/i.svg"></head></html>';

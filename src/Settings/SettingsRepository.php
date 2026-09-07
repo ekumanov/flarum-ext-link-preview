@@ -84,6 +84,37 @@ final class SettingsRepository
     }
 
     /**
+     * Render a small site mark (the page's own favicon) next to the site name
+     * on cards and hover previews. Off means the payload carries no icon URL
+     * at all — not merely a hidden one — so nothing is hot-linked.
+     */
+    public function showFavicons(): bool
+    {
+        return $this->boolSetting('show_favicons', true);
+    }
+
+    /**
+     * When a fetched page declares no icon of its own, try the conventional
+     * `/favicon.ico` on its origin once. This is the leak-free substitute for
+     * a third-party favicon service: the request is server-side, one per
+     * preview row, and to the same host we just fetched the page from.
+     */
+    public function iconProbe(): bool
+    {
+        return $this->boolSetting('icon_probe', true);
+    }
+
+    /**
+     * Size ceiling for a probed icon. A multi-resolution .ico can be tens of
+     * kilobytes; anything past this is not worth putting in front of readers
+     * for an 18px slot. Default 200 KB.
+     */
+    public function faviconMaxBytes(): int
+    {
+        return $this->intSetting('favicon_max_bytes', 204800);
+    }
+
+    /**
      * One value per line. Unlike csvSetting() this does NOT split on spaces or
      * commas — User-Agent strings are full of both.
      *
@@ -96,6 +127,20 @@ final class SettingsRepository
         $items = array_map('trim', $items);
 
         return array_values(array_filter($items, fn ($s) => $s !== ''));
+    }
+
+    /**
+     * Absent (never saved) means the default. Present means whatever the
+     * admin switch wrote — Flarum stores a Switch as '1' / '0'.
+     */
+    private function boolSetting(string $key, bool $default): bool
+    {
+        $v = $this->settings->get(self::PREFIX.$key);
+        if ($v === null || $v === '') {
+            return $default;
+        }
+
+        return (bool) $v && $v !== '0';
     }
 
     private function intSetting(string $key, int $default): int

@@ -20,7 +20,7 @@ final class HtmlFallbackParser
     /**
      * @return array{
      *   fallback: array{title:?string,description:?string}|null,
-     *   icons: list<array{href:string,type?:string,sizes?:list<array{width:int,height:int}>}>
+     *   icons: list<array{href:string,rel?:string,type?:string,sizes?:list<array{width:int,height:int}>}>
      * }
      */
     public function parse(string $html): array
@@ -70,6 +70,14 @@ final class HtmlFallbackParser
                     continue;
                 }
                 $entry = ['href' => $href];
+                // `rel` is kept so IconPicker can tell a `mask-icon` (a
+                // monochrome silhouette meant for browser chrome, which renders
+                // as a black blob in an <img>) from a real favicon without
+                // having to guess from the filename.
+                $rel = trim($icon->getAttribute('rel'));
+                if ($rel !== '') {
+                    $entry['rel'] = $rel;
+                }
                 $type = trim($icon->getAttribute('type'));
                 if ($type !== '') {
                     $entry['type'] = $type;

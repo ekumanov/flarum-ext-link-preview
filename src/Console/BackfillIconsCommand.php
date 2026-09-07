@@ -1,0 +1,183 @@
+<?php
+
+namespace Ekumanov\LinkPreview\Console;
+
+use Ekumanov\LinkPreview\Fetch\FaviconProbe;
+use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
+use Ekumanov\LinkPreview\Settings\SettingsRepository;
+use Illuminate\Console\Command;
+use Illuminate\Database\ConnectionInterface;
+use Throwable;
+
+/**
+ * One-shot: give a site mark to cards that already render fine but never had
+ * an icon stored.
+ *
+ * Every preview fetched since the extension shipped has had its declared
+ * `<link rel="icon">` saved — those rows need nothing, they light up the next
+ * time the card is rendered. This command is for the rest: pages that declared
+ * no icon at all, where the only way to find one is to ask the origin for
+ * `/favicon.ico`. On a live install with ~4000 cached URLs that was roughly 480
+ * rows once self-links were excluded.
+ *
+ * What it deliberately does NOT do: re-fetch the page. Titles, descriptions,
+ * thumbnails, `retrieved_at` and `fetch_attempts` are left exactly as they are,
+ * so running this can neither age a cache entry nor turn a working card into a
+ * failed one. The only column it writes is `icons`.
+ *
+ * Not scheduled. A backfill is a one-time catch-up; new rows get their probe
+ * inside FetchPreviewJob.
+ *
+ *   php flarum link-preview:backfill-icons --dry-run
+ *   php flarum link-preview:backfill-icons --limit=100 --delay=750
+ */
+class BackfillIconsCommand extends Command
+{
+    protected $signature = 'link-preview:backfill-icons
+                            {--limit=200 : Maximum rows to probe in one run.}
+                            {--host= : Only rows whose final URL is on this host (substring match).}
+                            {--delay=500 : Milliseconds to wait between probes. Keep this non-zero.}
+                            {--force : Run even when the "Probe for /favicon.ico" setting is off.}
+                            {--dry-run : Show what would be probed without making any request or write.}';
+
+    protected $description = 'Probe /favicon.ico for previews that render a card but have no stored icon.';
+
+    public function handle(
+        ConnectionInterface $db,
+        FaviconProbe $probe,
+        SettingsRepository $settings,
+        LocalDiscussionResolver $localResolver,
+    ): int {
+        $dry = (bool) $this->option('dry-run');
+
+        if (! $settings->iconProbe() && ! $this->option('force')) {
+            $this->error('Icon probing is switched off for this forum (Link Preview → "Probe for /favicon.ico").');
+            $this->line('Enable it, or pass --force to run this backfill anyway.');
+            return 1;
+        }
+
+        $limit = max(1, (int) $this->option('limit'));
+        $hostFilter = strtolower(trim((string) $this->option('host')));
+        $delayUs = max(0, (int) $this->option('delay')) * 1000;
+        $maxBytes = $settings->faviconMaxBytes();
+
+        // Candidate set from SQL is deliberately loose — "renders a card" is a
+        // PHP decision (PostResourceFields), so the finer filtering happens
+        // below rather than being duplicated as SQL that could drift from it.
+        // Over-fetch because self-links and title-less rows drop out.
+        $query = $db->table('ekumanov_link_previews')
+            ->select('id', 'url', 'final_url', 'mime', 'opengraph', 'fallback')
+            ->where('http_status', 200)
+            ->whereNull('error')
+            ->whereNotNull('retrieved_at')
+            ->where(fn ($q) => $q->whereNull('icons')->orWhere('icons', '[]'))
+            ->orderBy('id', 'asc');
+
+        if ($hostFilter !== '') {
+            $query->where(fn ($q) => $q->where('final_url', 'like', '%'.$hostFilter.'%')
+                ->orWhere('url', 'like', '%'.$hostFilter.'%'));
+        }
+
+        $rows = $query->limit($limit * 4)->get();
+
+        $stats = ['considered' => 0, 'skipped' => 0, 'probed' => 0, 'found' => 0, 'none' => 0, 'errors' => 0];
+        $done = 0;
+
+        foreach ($rows as $row) {
+            if ($done >= $limit) {
+                break;
+            }
+
+            $stats['considered']++;
+            $target = $row->final_url ?: $row->url;
+
+            if (! $this->rendersACard($row, $localResolver, $hostFilter, $target)) {
+                $stats['skipped']++;
+                continue;
+            }
+
+            $done++;
+
+            if ($dry) {
+                $this->line('  would probe '.$target);
+                continue;
+            }
+
+            try {
+                $icon = $probe->probe($target, $maxBytes);
+            } catch (Throwable $e) {
+                // Best-effort, same as the job: a probe that blows up leaves
+                // the row untouched so a later run can try again.
+                $stats['errors']++;
+                $this->warn("preview {$row->id}: {$e->getMessage()}");
+                continue;
+            }
+
+            $stats['probed']++;
+
+            // A miss is recorded as an empty list, not left NULL: that is what
+            // stops the next run — and the next TTL re-fetch — asking a site
+            // with no favicon all over again.
+            $db->table('ekumanov_link_previews')
+                ->where('id', $row->id)
+                ->update(['icons' => json_encode($icon === null ? [] : [$icon])]);
+
+            if ($icon === null) {
+                $stats['none']++;
+            } else {
+                $stats['found']++;
+                $this->line('  '.$icon['href']);
+            }
+
+            if ($delayUs > 0) {
+                usleep($delayUs);
+            }
+        }
+
+        $this->info('Done. '.json_encode($stats));
+
+        if ($dry) {
+            $this->warn('(dry-run — nothing was requested or written)');
+        } elseif ($done >= $limit) {
+            $this->warn("Stopped at the --limit of {$limit}. Re-run to continue.");
+        }
+
+        return 0;
+    }
+
+    /**
+     * Mirrors the display layer's own refusals: an image URL renders inline as
+     * an <img> rather than a card, and a row with no title produces nothing at
+     * all. Probing either would be a request nobody ever sees the result of.
+     *
+     * Self-links are excluded outright — the forum's own favicon is already in
+     * the reader's tab, and fetching our public hostname from our own server is
+     * exactly what a CDN answers with a challenge.
+     */
+    private function rendersACard(object $row, LocalDiscussionResolver $localResolver, string $hostFilter, string $target): bool
+    {
+        if ($row->mime !== null && str_starts_with((string) $row->mime, 'image/')) {
+            return false;
+        }
+
+        if ($localResolver->isSelfHost($row->url)) {
+            return false;
+        }
+
+        // `like %host%` above can match a host appearing in a query string;
+        // check the real host now that we can parse it.
+        if ($hostFilter !== '' && ! str_contains(strtolower((string) parse_url($target, PHP_URL_HOST)), $hostFilter)) {
+            return false;
+        }
+
+        return $this->title($row->opengraph) !== null || $this->title($row->fallback) !== null;
+    }
+
+    private function title(?string $json): ?string
+    {
+        $decoded = $json === null ? null : json_decode($json, true);
+        $title = is_array($decoded) ? ($decoded['title'] ?? null) : null;
+
+        return is_string($title) && trim($title) !== '' ? $title : null;
+    }
+}

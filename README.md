@@ -83,8 +83,12 @@ leaves the actual fetch for the sweep, so it never blocks the save. See
   is a post being saved/edited by an authenticated user.
 - **No retries.** A failed fetch stays failed (one entry per URL) — a single bad
   URL never becomes a fetch storm.
-- **No image proxy.** Thumbnails are hot-linked from the source. A failed image
-  load degrades to a fixed-size placeholder slot (no layout shift).
+- **No image proxy.** Thumbnails and site icons are hot-linked from the source.
+  A failed image load degrades to a fixed-size placeholder slot (no layout
+  shift).
+- **No third-party favicon service.** Site icons come from the page's own
+  declared icons, or from one server-side probe of its own `/favicon.ico`.
+  Readers' browsers never contact a favicon aggregator.
 - **No card for sites already handled by `fof/formatting`** (iframe players or
   inline images) — those URLs are transformed before they reach the scanner.
 - **No URLs from mentions or quoted content.** `<UserMention>`, `<PostMention>`,
@@ -268,9 +272,35 @@ INSERT INTO settings (`key`, value) VALUES
   ('ekumanov-link-preview.max_urls_per_post',  '10'),
   ('ekumanov-link-preview.whitelist',          ''),
   ('ekumanov-link-preview.blacklist',          ''),
-  ('ekumanov-link-preview.user_agents',        '')
+  ('ekumanov-link-preview.user_agents',        ''),
+  ('ekumanov-link-preview.show_favicons',      '1'),
+  ('ekumanov-link-preview.icon_probe',         '1'),
+  ('ekumanov-link-preview.favicon_max_bytes',  '204800')  -- 200 KB
 ON DUPLICATE KEY UPDATE value = VALUES(value);
 ```
+
+### Site icons
+
+Cards carry a small mark next to the site name: the linked page's own favicon,
+taken from the `<link rel="icon">` tags the fetcher already reads. It is picked
+server-side — closest to 32-64px wins, PNG and SVG beat multi-resolution `.ico`,
+Safari's monochrome `mask-icon` is skipped, and the URL is resolved against the
+page's final URL and forced to https.
+
+The icon is hot-linked, exactly like the card thumbnail beside it, and requested
+with `no-referrer`. It occupies a fixed 18x18 slot that stays put whether or not
+the image loads, so a blocked or 404'd icon shifts nothing.
+
+`icon_probe` covers pages that declare no icon at all: the server asks that
+page's own origin for `/favicon.ico`, once per link, and stores the result if it
+comes back as an image under `favicon_max_bytes`. A miss is remembered, so the
+same site is never asked twice.
+
+There is deliberately **no third-party favicon service**. Google's
+`s2/favicons` and its equivalents would be a one-line alternative and would also
+hand a third party a list of every domain your forum links to, looked up from
+every reader's browser. `show_favicons` off removes the icon URL from the page
+altogether rather than merely hiding it.
 
 ### `user_agents`
 
@@ -324,6 +354,7 @@ php flarum link-preview:backfill       # scan historical posts, enqueue missing 
 php flarum link-preview:sweep          # re-dispatch dropped fetch jobs (also runs on the scheduler)
 php flarum link-preview:retry-failed   # re-try fetches that failed recoverably (also on the scheduler)
 php flarum link-preview:refresh-self   # re-resolve cached self-link previews from the local DB
+php flarum link-preview:backfill-icons # probe /favicon.ico for older cards that have no site icon
 ```
 
 `retry-failed` picks up rows whose last fetch failed for a reason that might
@@ -344,6 +375,16 @@ working again by the time anyone checked.
 resolver shipped (they were fetched over HTTP and may carry a cropped forum
 logo) into clean, image-less title + first-post-excerpt cards. Supports
 `--dry-run`.
+
+`backfill-icons` is a one-off catch-up for links cached before icon probing
+existed. It targets rows that already render a card, are not self-links, and
+have no stored icon, and runs *only* the `/favicon.ico` probe on them — it never
+re-fetches the page, and touches no column but `icons`, so titles, thumbnails,
+`retrieved_at` and `fetch_attempts` come out unchanged. Rows that already have
+a stored icon need nothing; they light up on the next render. `--dry-run`,
+`--limit=N`, `--host=example.com`, and `--delay=` (milliseconds between
+requests, default 500) are supported. Not scheduled: new links get their probe
+inside the fetch job.
 
 ## Development
 
@@ -369,9 +410,9 @@ verify the guards.
 - **Per-group permission gating** for which user groups may trigger server-side
   fetches (today any authenticated author can, bounded only by the per-user rate
   limit, per-post URL cap, and the SSRF guards).
-- **Optional image proxy** — serve card thumbnails from the forum's own domain
-  instead of hot-linking, for reliability and to avoid leaking readers' IPs to
-  third-party image hosts.
+- **Optional image proxy** — serve card thumbnails and site icons from the
+  forum's own domain instead of hot-linking, for reliability and to avoid
+  leaking readers' IPs to third-party image hosts.
 - **Search reindex hook** so fetched card titles/descriptions are searchable.
 
 ## License

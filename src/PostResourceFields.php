@@ -3,6 +3,8 @@
 namespace Ekumanov\LinkPreview;
 
 use Carbon\Carbon;
+use Ekumanov\LinkPreview\Parser\IconPicker;
+use Ekumanov\LinkPreview\Settings\SettingsRepository;
 use Flarum\Api\Context;
 use Flarum\Api\Schema;
 use Flarum\Post\Post;
@@ -18,6 +20,11 @@ class PostResourceFields
         'youtube-nocookie.com',
         'www.youtube-nocookie.com',
     ];
+
+    public function __construct(
+        private readonly IconPicker $icons,
+        private readonly SettingsRepository $settings,
+    ) {}
 
     public function __invoke(): array
     {
@@ -107,6 +114,7 @@ class PostResourceFields
         $description = Arr::get($og, 'description') ?: Arr::get($fallback, 'description');
 
         $image = $this->firstImage($og);
+        $isBrand = (bool) ($image['brand'] ?? false);
 
         return [
             'previewId' => (int) $preview->id,
@@ -120,13 +128,34 @@ class PostResourceFields
             // A `brand` image (the forum's social share logo on self-links) is
             // shown as a small favicon next to the site name; a real content
             // thumbnail fills the image slot (cover crop).
-            'imageFit' => ($image['brand'] ?? false) ? 'contain' : null,
+            'imageFit' => $isBrand ? 'contain' : null,
+            // The site mark. Never fills the big image slot (see firstImage's
+            // docblock) — it goes in the 18x18 box beside the site name, which
+            // the front-end reserves whether or not this is set, so a card that
+            // gains one shifts nothing. A brand image is already occupying
+            // that box, so the two are mutually exclusive.
+            'favicon' => $isBrand ? null : $this->favicon($preview, $clickUrl),
             'siteName' => (string) $siteName,
             'domain' => $domain,
             'dismissed' => $dismissed,
             'pinned' => $pinned,
             'canToggle' => $canToggle,
         ];
+    }
+
+    /**
+     * One absolute https icon URL for this row, or null. The `icons` column
+     * has been populated since the extension shipped — this is the first time
+     * it reaches a reader, so ~2390 existing production rows light up with no
+     * re-fetching at all.
+     */
+    private function favicon(Preview $preview, string $baseUrl): ?string
+    {
+        if (! $this->settings->showFavicons()) {
+            return null;
+        }
+
+        return $this->icons->pick($preview->icons, $baseUrl);
     }
 
     /**

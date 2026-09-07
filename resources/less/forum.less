@@ -235,13 +235,24 @@
     margin-bottom: 4px;
 }
 
-// Logo self-links (forum share image): render the mark as a small favicon in
-// front of the site name instead of a full-size thumbnail — the most compact
+// The site mark in front of the site name: the forum share image on logo
+// self-links, the source page's own favicon everywhere else — the most compact
 // treatment, matching how Slack/Discord/iMessage show logo-only links.
-.LinkPreview-card-site-favicon {
+//
+// The slot, not the image, carries the size. A favicon that 404s or gets
+// blocked has its <img> removed and leaves this box standing, so the card's
+// text never reflows after paint.
+.LinkPreview-card-site-mark {
     flex: 0 0 auto;
+    display: block;
     width: 18px;
     height: 18px;
+}
+
+.LinkPreview-card-site-favicon {
+    display: block;
+    width: 100%;
+    height: 100%;
     object-fit: contain;
     border-radius: 3px;
 }
