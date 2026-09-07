@@ -339,8 +339,26 @@ origin that script would run there. SVG icons fall back to a lettered chip.
 Filenames are the SHA-256 of the content, so nothing from the remote host
 reaches the path and identical icons collapse onto one file.
 
+**When a copy cannot be taken, the card falls back to hot-linking** — exactly
+what it did before the proxy existed. Some hosts answer a server with a 409 or a
+timeout while answering readers perfectly well; measured on a live install, 25
+of 30 sampled icons that could not be fetched server-side loaded fine from an
+ordinary connection. That is IP reputation, not a broken icon, and no number of
+retries fixes it. After three attempts the icon is left hot-linked and stopped
+being asked for, because taking a working icon away from readers to win a
+privacy point on a domain the card already links to is a poor trade. Run
+`--retry-proxy` to forget those give-ups if a host that was blocking you stops.
+
 Converting existing rows: `php flarum link-preview:backfill-icons`. Removing
 files no row points at any more: `--only=prune`.
+
+> **Recommended header.** Icons are static files served by your web server, so
+> the extension cannot set headers on them. Make sure your vhost sends
+> `X-Content-Type-Options: nosniff` (nginx: `add_header X-Content-Type-Options
+> nosniff always;`). Nothing without valid image magic bytes is ever stored, so
+> this is defence in depth rather than the primary control — but it is the
+> difference between "can only be read as an image" and "can only be read as
+> the image type we labelled it".
 
 > **Directory ownership matters.** Icons are written both by the queue worker
 > and by the console command, which on many installs run as *different users*

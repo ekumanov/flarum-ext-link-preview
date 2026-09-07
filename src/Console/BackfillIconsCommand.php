@@ -42,6 +42,7 @@ class BackfillIconsCommand extends Command
                             {--host= : Only rows whose final URL is on this host (substring match).}
                             {--delay=500 : Milliseconds to wait between probes. Keep this non-zero.}
                             {--force : Run even when the "Probe for /favicon.ico" setting is off.}
+                            {--retry-proxy : Forget earlier give-ups and try once more to copy icons this server could not fetch. Use when a host that was blocking you has stopped.}
                             {--dry-run : Show what would be probed without making any request or write.}';
 
     protected $description = 'Give older previews a site icon: measure the ones already stored, and probe /favicon.ico for those that have none.';
@@ -61,6 +62,10 @@ class BackfillIconsCommand extends Command
         if ($only !== '' && ! in_array($only, ['probe', 'validate', 'prune'], true)) {
             $this->error('--only must be "probe", "validate" or "prune".');
             return 1;
+        }
+
+        if ($this->option('retry-proxy')) {
+            $this->resetProxyGiveUps($db, $dry);
         }
 
         if ($only === 'prune') {
@@ -369,5 +374,48 @@ class BackfillIconsCommand extends Command
         }
 
         $this->info('Deleted '.count($orphans).' orphaned icon file(s).');
+    }
+
+    /**
+     * Clear the give-up counters so hosts that were refusing this server get
+     * another chance. Their icons are hot-linked in the meantime, so this only
+     * ever improves matters — it costs one request per row that is still
+     * blocked, which is why it is opt-in rather than automatic.
+     */
+    private function resetProxyGiveUps(ConnectionInterface $db, bool $dry): void
+    {
+        $ids = [];
+
+        $db->table('ekumanov_link_previews')
+            ->select('id', 'icons')
+            ->where('icons', 'like', '%proxy_tries%')
+            ->orderBy('id')
+            ->chunk(500, function ($rows) use (&$ids) {
+                foreach ($rows as $row) {
+                    $ids[$row->id] = json_decode((string) $row->icons, true) ?: [];
+                }
+            });
+
+        if ($ids === []) {
+            $this->info('── retry-proxy: nothing had been given up on.');
+            return;
+        }
+
+        if ($dry) {
+            $this->info('── retry-proxy: would clear '.count($ids).' give-up marker(s).');
+            return;
+        }
+
+        foreach ($ids as $id => $icons) {
+            foreach ($icons as $i => $icon) {
+                if (is_array($icon)) {
+                    unset($icons[$i]['proxy_tries']);
+                }
+            }
+
+            $db->table('ekumanov_link_previews')->where('id', $id)->update(['icons' => json_encode($icons)]);
+        }
+
+        $this->info('── retry-proxy: cleared '.count($ids).' give-up marker(s).');
     }
 }

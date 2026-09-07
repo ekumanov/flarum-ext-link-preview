@@ -34,6 +34,21 @@ final class IconResolver
      */
     public const MAX_CHECKS = 3;
 
+    /**
+     * How many times we will try to take our own copy of one icon before
+     * giving up and leaving it hot-linked.
+     *
+     * Some hosts answer this server with a 409 or a timeout while answering
+     * readers perfectly well — measured on a live install, 25 of 30 sampled
+     * icons we could not fetch loaded fine from an ordinary connection. That is
+     * IP reputation, not a broken icon, and no number of retries fixes it. So
+     * after a few attempts we stop asking and fall back to exactly what the
+     * card did before the proxy existed: hot-link it. The alternative — a
+     * lettered chip — would take a working icon away from the reader to win a
+     * privacy point on a domain the card is already linking to.
+     */
+    public const MAX_PROXY_TRIES = 3;
+
     public function __construct(
         private readonly SafeHttpClient $client,
         private readonly IconPicker $picker,
@@ -62,6 +77,14 @@ final class IconResolver
 
             $top = $ranked[0];
             $entry = $icons[$top['index']] ?? [];
+            $tries = (int) ($entry['proxy_tries'] ?? 0);
+
+            // We have asked for this one enough times. Leave it exactly as it
+            // is — hot-linked — and stop spending requests on a host that has
+            // made its position clear.
+            if ($tries >= self::MAX_PROXY_TRIES) {
+                break;
+            }
 
             // Wanted on our own disk and not there yet — worth a fetch even if
             // we already know its size, because the size is all we kept. This
@@ -80,8 +103,15 @@ final class IconResolver
             $body = $this->fetch($top['url']);
 
             if ($body === null) {
-                // Couldn't reach it. Leave the entry untouched so a later run
-                // can try again, and stop — we can't make progress right now.
+                // Couldn't reach it. Count the attempt when we were trying to
+                // take a copy, so a host that never answers us eventually
+                // settles on hot-linking instead of being asked forever. A
+                // pure measurement pass leaves no mark, exactly as before.
+                if ($needsCopy) {
+                    $icons[$top['index']]['proxy_tries'] = $tries + 1;
+                    $changed = true;
+                }
+
                 break;
             }
 
@@ -106,6 +136,7 @@ final class IconResolver
 
                 if ($stored !== null) {
                     $icons[$top['index']]['stored'] = $stored;
+                    unset($icons[$top['index']]['proxy_tries']); // it answered in the end
                 } elseif (IconStore::identify($body) === null) {
                     // A format we will never re-serve — an SVG, or something
                     // that is not an image at all. Recorded so the display

@@ -223,6 +223,51 @@ final class IconResolverTest extends TestCase
         $this->assertSame(0, $r['checks']);
     }
 
+    // ─── giving up gracefully ─────────────────────────────────────────
+
+    public function test_counts_a_failed_copy_attempt(): void
+    {
+        // No canned response, so the fetch fails at transport level.
+        $r = $this->resolve([['href' => '/favicon.png', 'bytes' => 900]], [], proxy: true);
+
+        $this->assertSame(1, $r['icons'][0]['proxy_tries']);
+        $this->assertTrue($r['changed']);
+    }
+
+    public function test_stops_trying_after_the_limit_and_leaves_it_hot_linked(): void
+    {
+        $icons = [['href' => '/favicon.png', 'bytes' => 900, 'proxy_tries' => IconResolver::MAX_PROXY_TRIES]];
+
+        $r = $this->resolve($icons, [], proxy: true);
+
+        $this->assertSame(0, $r['checks'], 'a host that keeps refusing us must stop being asked');
+        $this->assertFalse($r['changed']);
+        // Still choosable, so the card keeps the working icon it always had.
+        $this->assertSame(
+            'https://example.com/favicon.png',
+            (new IconPicker())->pick($r['icons'], 'https://example.com/', self::MAX)
+        );
+    }
+
+    public function test_a_measurement_only_pass_does_not_count_attempts(): void
+    {
+        $r = $this->resolve([['href' => '/favicon.png']], [], proxy: false);
+
+        $this->assertArrayNotHasKey('proxy_tries', $r['icons'][0]);
+    }
+
+    public function test_a_late_success_clears_the_give_up_counter(): void
+    {
+        $r = $this->resolve(
+            [['href' => '/favicon.png', 'bytes' => 900, 'proxy_tries' => 2]],
+            ['https://example.com/favicon.png' => $this->image(900)],
+            proxy: true,
+        );
+
+        $this->assertArrayHasKey('stored', $r['icons'][0]);
+        $this->assertArrayNotHasKey('proxy_tries', $r['icons'][0]);
+    }
+
     public function test_returns_empty_walk_when_nothing_is_choosable(): void
     {
         $r = $this->resolve([['href' => 'data:image/png;base64,AA']], []);
