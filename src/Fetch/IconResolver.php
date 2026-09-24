@@ -57,19 +57,23 @@ final class IconResolver
 
     /**
      * @param  list<array<string,mixed>> $icons
-     * @return array{icons:list<array<string,mixed>>,checks:int,changed:bool}
-     */
-    /**
      * @param  bool $proxy keep a copy on our own disk so readers never fetch
      *                     the icon from its source
+     * @param  float|null $deadline absolute microtime(true) the whole walk must
+     *                    finish by (see SafeHttpClient::get()); running out
+     *                    stops the walk like a transport failure — no verdict
      * @return array{icons:list<array<string,mixed>>,checks:int,changed:bool}
      */
-    public function validate(array $icons, string $finalUrl, int $maxBytes, bool $proxy = false): array
+    public function validate(array $icons, string $finalUrl, int $maxBytes, bool $proxy = false, ?float $deadline = null): array
     {
         $checks = 0;
         $changed = false;
 
         while ($checks < self::MAX_CHECKS) {
+            if ($deadline !== null && microtime(true) >= $deadline) {
+                break; // out of time; the next fetch of this row carries on
+            }
+
             $ranked = $this->picker->rank($icons, $finalUrl, $maxBytes);
             if ($ranked === []) {
                 break; // nothing left worth measuring
@@ -100,7 +104,7 @@ final class IconResolver
             }
 
             $checks++;
-            $body = $this->fetch($top['url']);
+            $body = $this->fetch($top['url'], $deadline);
 
             if ($body === null) {
                 // Couldn't reach it. Count the attempt when we were trying to
@@ -161,12 +165,19 @@ final class IconResolver
      *                           image"; null = we could not tell (transport
      *                           failure, so no verdict and no annotation)
      */
-    private function fetch(string $url): string|false|null
+    private function fetch(string $url, ?float $deadline = null): string|false|null
     {
-        $result = $this->client->get($url);
+        $result = $this->client->get($url, $deadline);
 
         if ($result['ok'] !== true) {
             return null; // timeout, DNS, refused — no verdict
+        }
+
+        // Blocked, and the deadline stopped us before every identity had been
+        // tried. Condemning the icon as `bad` on that would be a verdict we
+        // never actually reached.
+        if (! empty($result['cutShort'])) {
+            return null;
         }
 
         if ($result['status'] !== 200) {

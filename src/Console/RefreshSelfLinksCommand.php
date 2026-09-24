@@ -3,6 +3,7 @@
 namespace Ekumanov\LinkPreview\Console;
 
 use Carbon\Carbon;
+use Ekumanov\LinkPreview\Fetch\FailurePolicy;
 use Ekumanov\LinkPreview\Preview;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
 use Illuminate\Console\Command;
@@ -78,6 +79,7 @@ class RefreshSelfLinksCommand extends Command
                     $preview->api_resource = null;
                     $preview->mime = null;
                     $preview->exif = null;
+                    $preview->fetch_attempts = 0;
                     $stats['refreshed']++;
                 } else {
                     // Discussion deleted / hidden / restricted since it was
@@ -85,6 +87,8 @@ class RefreshSelfLinksCommand extends Command
                     $preview->http_status = 0;
                     $preview->opengraph = null;
                     $preview->error = 'self_link_not_viewable';
+                    // Settled: stamped so the retry pass can skip it in SQL.
+                    $preview->fetch_attempts = FailurePolicy::SETTLED_ATTEMPTS;
                     $stats['unviewable']++;
                 }
                 $preview->save();

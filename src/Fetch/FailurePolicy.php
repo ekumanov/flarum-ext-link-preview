@@ -21,6 +21,24 @@ final class FailurePolicy
     public const MAX_ATTEMPTS = 6;
 
     /**
+     * `fetch_attempts` value written on a failure that will never be retried
+     * (404, SSRF refusal, oversized body, a self-link nobody may read...).
+     *
+     * Why a sentinel rather than leaving the counter alone: the retry pass has
+     * to pick its candidates in SQL, and the retryable/permanent split lives
+     * here, in PHP. Before this, permanent failures were fetched and discarded
+     * on every run — and since they are never retried their `retrieved_at`
+     * never advances, so they sat at the head of the oldest-first window
+     * forever. Once there were more of them than the window held, no retryable
+     * row was ever reached again. Stamping them at classification time lets
+     * `fetch_attempts < MAX_ATTEMPTS` exclude them where the rows are.
+     *
+     * Far above any sane --max-attempts, well inside the smallint column. A
+     * later successful fetch resets the counter to 0 like any other.
+     */
+    public const SETTLED_ATTEMPTS = 1000;
+
+    /**
      * Failure reasons that can plausibly resolve themselves. Recorded in the
      * `error` column as "<reason>: <detail>", so we match on the prefix.
      */
@@ -34,6 +52,12 @@ final class FailurePolicy
         // unknowable from the row. One re-fetch recovers the truth, and the
         // normal backoff stops it becoming a habit.
         'legacy_status',
+        // A fetch job that was dispatched repeatedly and never finished — the
+        // worker died under it, or the queue was down. Written by the sweep
+        // when it gives up re-dispatching. Retryable because the second cause
+        // is an outage, not a verdict on the URL; the normal backoff keeps the
+        // first from becoming a loop.
+        'stuck',
         // Residue from the predecessor extension, which stored the exception
         // class as the error. Only the network-level ones are here, matching
         // how we classify our own connect_failed / protocol_error; its
@@ -92,6 +116,17 @@ final class FailurePolicy
         }
 
         return $httpStatus !== null && in_array($httpStatus, self::RETRYABLE_STATUSES, true);
+    }
+
+    /**
+     * The `fetch_attempts` value to record after a failure: one more for a
+     * failure worth revisiting, the settled sentinel for one that is not.
+     */
+    public static function attemptsAfterFailure(string $error, ?int $httpStatus, int $previousAttempts): int
+    {
+        return self::isRetryable($error, $httpStatus)
+            ? min($previousAttempts + 1, self::SETTLED_ATTEMPTS - 1)
+            : self::SETTLED_ATTEMPTS;
     }
 
     /** Seconds to wait after $attempts consecutive failures. */

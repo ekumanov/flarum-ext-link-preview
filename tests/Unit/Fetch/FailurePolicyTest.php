@@ -113,4 +113,22 @@ final class FailurePolicyTest extends TestCase
         $this->assertSame('self_link_not_viewable', FailurePolicy::reasonOf('self_link_not_viewable'));
         $this->assertSame('http_403', FailurePolicy::reasonOf('http_403: server answered 403'));
     }
+
+    public function test_a_permanent_failure_is_stamped_settled(): void
+    {
+        $this->assertSame(FailurePolicy::SETTLED_ATTEMPTS, FailurePolicy::attemptsAfterFailure('http_404: server answered 404', 404, 0));
+        $this->assertSame(FailurePolicy::SETTLED_ATTEMPTS, FailurePolicy::attemptsAfterFailure('self_link_not_viewable', 0, 2));
+        $this->assertGreaterThan(100, FailurePolicy::SETTLED_ATTEMPTS, 'must sit far above any --max-attempts');
+    }
+
+    public function test_a_retryable_failure_counts_one_more_attempt(): void
+    {
+        $this->assertSame(1, FailurePolicy::attemptsAfterFailure('timeout: exceeded 10s', 0, 0));
+        $this->assertSame(3, FailurePolicy::attemptsAfterFailure('http_403: server answered 403', 403, 2));
+    }
+
+    public function test_a_stuck_fetch_is_retryable(): void
+    {
+        $this->assertTrue(FailurePolicy::isRetryable('stuck: fetch never finished after 3 re-dispatches', 0));
+    }
 }

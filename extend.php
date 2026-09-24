@@ -42,7 +42,9 @@ return [
                 // (retrieved_at NULL) — the front-end renders a fixed-size
                 // skeleton for pending rows so the card slot is reserved before
                 // the fetch lands. Hard failures (non-200 with a retrieved_at)
-                // stay excluded.
+                // stay excluded. `refresh_error` is deliberately NOT filtered
+                // on: it records a failed re-fetch of a row whose card is
+                // still good, and that card stays (see FetchPreviewJob).
                 ->where(fn ($q) => $q->where('http_status', 200)->orWhereNull('retrieved_at'));
         }),
 

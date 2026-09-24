@@ -264,6 +264,60 @@ final class SafeHttpClientTest extends TestCase
         $this->assertSame(['browser-ua', 'scraper-ua'], $executor->userAgents());
     }
 
+    // --- Deadline --------------------------------------------------------
+
+    public function test_a_spent_deadline_starts_no_request(): void
+    {
+        $url = 'https://slow.example.com/';
+        $resolver = new SpyResolver(['slow.example.com' => ['93.184.216.34']]);
+        $executor = new FakeExecutor([$url => ExecutorResult::ok(200, [], 'ok')]);
+        $client = $this->client($resolver, $executor);
+
+        $r = $client->get($url, microtime(true) - 1);
+
+        $this->assertFalse($r['ok']);
+        $this->assertSame(ExecutorResult::ERR_TIMEOUT, $r['reason'], 'must classify as a retryable timeout');
+        $this->assertSame([], $executor->calls);
+    }
+
+    public function test_fallback_identities_stop_when_the_deadline_is_near(): void
+    {
+        $url = 'https://blocked.example.com/';
+        $resolver = new SpyResolver(['blocked.example.com' => ['93.184.216.34']]);
+        $executor = new FakeExecutor(
+            responses: [$url => ExecutorResult::ok(403, [], 'go away')],
+            agentResponses: [
+                'scraper-ua|'.$url => ExecutorResult::ok(200, ['content-type' => 'text/html'], 'hi'),
+            ],
+        );
+        $client = $this->client($resolver, $executor, userAgents: ['browser-ua', 'scraper-ua']);
+
+        // Enough for one request, not enough to start a fallback.
+        $r = $client->get($url, microtime(true) + 2);
+
+        $this->assertSame(403, $r['status']);
+        $this->assertTrue($r['cutShort'] ?? false, 'a truncated chain must say so');
+        $this->assertSame(['browser-ua'], $executor->userAgents());
+    }
+
+    public function test_an_ample_deadline_changes_nothing(): void
+    {
+        $url = 'https://blocked.example.com/';
+        $resolver = new SpyResolver(['blocked.example.com' => ['93.184.216.34']]);
+        $executor = new FakeExecutor(
+            responses: [$url => ExecutorResult::ok(403, [], 'go away')],
+            agentResponses: [
+                'scraper-ua|'.$url => ExecutorResult::ok(200, ['content-type' => 'text/html'], 'hi'),
+            ],
+        );
+        $client = $this->client($resolver, $executor, userAgents: ['browser-ua', 'scraper-ua']);
+
+        $r = $client->get($url, microtime(true) + 60);
+
+        $this->assertSame(200, $r['status']);
+        $this->assertArrayNotHasKey('cutShort', $r);
+    }
+
     public function test_first_user_agent_is_used_alone_when_it_works(): void
     {
         $url = 'https://open.example.com/';

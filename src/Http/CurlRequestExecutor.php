@@ -21,7 +21,7 @@ namespace Ekumanov\LinkPreview\Http;
  * Redirects are disabled here (FOLLOWLOCATION=false). SafeHttpClient re-runs
  * the full URL/DNS/IP validation chain on each hop instead.
  */
-final class CurlRequestExecutor implements RequestExecutor
+final class CurlRequestExecutor implements TimeBoundedExecutor
 {
     /**
      * Plain desktop Chrome. Measured 2026-09-01 against the 54 hosts that were
@@ -44,6 +44,23 @@ final class CurlRequestExecutor implements RequestExecutor
 
     public function execute(string $url, string $pinnedHost, string $pinnedIp, int $port, ?string $userAgent = null): ExecutorResult
     {
+        return $this->executeWithin($url, $pinnedHost, $pinnedIp, $port, $userAgent, (float) $this->totalTimeoutSec);
+    }
+
+    public function executeWithin(
+        string $url,
+        string $pinnedHost,
+        string $pinnedIp,
+        int $port,
+        ?string $userAgent,
+        float $maxSeconds,
+    ): ExecutorResult {
+        // Never longer than configured, and never less than a second — curl
+        // treats 0 as "no timeout", which is the opposite of what a caller
+        // with an almost-spent budget is asking for.
+        $totalMs = (int) max(1000, min($this->totalTimeoutSec * 1000, $maxSeconds * 1000));
+        $connectMs = min($this->connectTimeoutSec * 1000, $totalMs);
+
         $ch = curl_init();
         if ($ch === false) {
             return ExecutorResult::failure(ExecutorResult::ERR_CONNECT, 'curl_init failed');
@@ -62,8 +79,8 @@ final class CurlRequestExecutor implements RequestExecutor
             CURLOPT_URL => $url,
             CURLOPT_RESOLVE => [$resolveDirective],
             CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_CONNECTTIMEOUT => $this->connectTimeoutSec,
-            CURLOPT_TIMEOUT => $this->totalTimeoutSec,
+            CURLOPT_CONNECTTIMEOUT_MS => $connectMs,
+            CURLOPT_TIMEOUT_MS => $totalMs,
             CURLOPT_USERAGENT => $userAgent ?? $this->userAgent,
             CURLOPT_HTTPHEADER => [
                 'Accept: text/html, application/xhtml+xml; q=0.9, */*; q=0.1',
@@ -119,7 +136,7 @@ final class CurlRequestExecutor implements RequestExecutor
         if ($execOk === false) {
             return match ($errno) {
                 CURLE_WRITE_ERROR => ExecutorResult::failure(ExecutorResult::ERR_BODY_TOO_LARGE, "exceeded {$this->maxBytes} bytes"),
-                CURLE_OPERATION_TIMEOUTED => ExecutorResult::failure(ExecutorResult::ERR_TIMEOUT, "exceeded {$this->totalTimeoutSec}s"),
+                CURLE_OPERATION_TIMEOUTED => ExecutorResult::failure(ExecutorResult::ERR_TIMEOUT, 'exceeded '.round($totalMs / 1000, 1).'s'),
                 CURLE_COULDNT_CONNECT, CURLE_COULDNT_RESOLVE_HOST => ExecutorResult::failure(ExecutorResult::ERR_CONNECT, "curl errno $errno"),
                 default => ExecutorResult::failure(ExecutorResult::ERR_PROTOCOL, "curl errno $errno"),
             };

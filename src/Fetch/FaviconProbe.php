@@ -27,10 +27,12 @@ final class FaviconProbe
     /**
      * @param  string $pageUrl  the URL the page fetch landed on
      * @param  int    $maxBytes size ceiling; a larger body is discarded
+     * @param  float|null $deadline absolute microtime(true) the probe must
+     *                    finish by — see SafeHttpClient::get()
      * @return array{href:string,probed:true}|null an `icons` entry, marked so a
      *         later backfill can tell a guess from a declared icon
      */
-    public function probe(string $pageUrl, int $maxBytes): ?array
+    public function probe(string $pageUrl, int $maxBytes, ?float $deadline = null): ?array
     {
         $origin = self::origin($pageUrl);
         if ($origin === null) {
@@ -40,7 +42,7 @@ final class FaviconProbe
         // Straight through SafeHttpClient — same validation, DNS pinning,
         // private-IP refusal and redirect re-checking as any other fetch. A
         // favicon URL is still an attacker-influenced URL.
-        $result = $this->client->get($origin.self::PATH);
+        $result = $this->client->get($origin.self::PATH, $deadline);
 
         if ($result['ok'] !== true || $result['status'] !== 200) {
             return null;

@@ -3,6 +3,8 @@
 namespace Ekumanov\LinkPreview\Listener;
 
 use Carbon\Carbon;
+use Ekumanov\LinkPreview\Fetch\FailurePolicy;
+use Ekumanov\LinkPreview\Http\UrlValidator;
 use Ekumanov\LinkPreview\Preview;
 use Ekumanov\LinkPreview\Job\FetchPreviewJob;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
@@ -75,80 +77,165 @@ final class ScanPostUrls
             return;
         }
 
-        $allowed = $this->limiter->consume($actor, count($urls));
-        if ($allowed < count($urls)) {
-            $this->log->info('link-preview: user hit hourly URL limit', [
-                'user_id' => $actor->id, 'submitted' => count($urls), 'allowed' => $allowed,
-            ]);
-        }
-        if ($allowed === 0) {
-            return;
-        }
-
         $ttlAgo = Carbon::now()->subSeconds($this->settings->ttlSeconds());
 
-        foreach (array_slice($urls, 0, $allowed) as $url) {
-            $hash = sha1($url, true);
+        // One query for every URL's existing row, rather than one per URL.
+        $hashes = [];
+        foreach ($urls as $url) {
+            $hashes[$url] = sha1($url, true);
+        }
+        $existing = Preview::whereIn('url_hash', array_values($hashes))->get()->keyBy(
+            fn (Preview $p) => bin2hex((string) $p->url_hash)
+        );
 
-            $preview = Preview::where('url_hash', $hash)->first();
-            $isNew = false;
+        // The rate limit exists to bound the fetch worker, so it is charged
+        // only for what makes work for it: a brand-new row, or a real remote
+        // re-fetch of one that has gone stale. An edit that leaves the links
+        // alone, a URL someone else already previewed, and a self-link (which
+        // never touches HTTP) cost nothing. Charging for those used to burn
+        // the allowance on every edit — and a URL over the allowance was then
+        // dropped before its pivot row was written, so it never got the card
+        // that already existed for it.
+        $charged = [];
+        foreach ($urls as $url) {
+            $preview = $existing->get(bin2hex($hashes[$url]));
+            if ($this->localResolver->isSelfHost($url)) {
+                continue; // resolved locally, here or in the job — never HTTP
+            }
+            if ($preview === null || $this->isDue($preview, $ttlAgo)) {
+                $charged[] = $url;
+            }
+        }
+
+        $allowed = $charged === [] ? 0 : $this->limiter->consume($actor, count($charged));
+        if ($allowed < count($charged)) {
+            $this->log->info('link-preview: user hit hourly URL limit', [
+                'user_id' => $actor->id, 'submitted' => count($charged), 'allowed' => $allowed,
+            ]);
+        }
+        $withinAllowance = array_flip(array_slice($charged, 0, $allowed));
+
+        foreach ($urls as $url) {
+            $hash = $hashes[$url];
+            $preview = $existing->get(bin2hex($hash));
+            $isCharged = in_array($url, $charged, true);
+            $mayFetch = ! $isCharged || isset($withinAllowance[$url]);
 
             if ($preview === null) {
-                $preview = new Preview();
-                $preview->url = $url;
-                $preview->url_hash = $hash;
-                $preview->created_at = Carbon::now();
-                $preview->save();
-                $isNew = true;
+                if (! $mayFetch) {
+                    // Over the allowance and nothing to show for it: no row,
+                    // no pivot, no job — as before.
+                    continue;
+                }
+
+                $preview = $this->findOrCreate($url, $hash);
+                if ($preview === null) {
+                    continue;
+                }
             }
 
             // Link the preview to this post. Use insertOrIgnore so repeats are
             // idempotent (e.g. revising the same post twice with the same URL).
+            // Written for every URL whose row exists, allowance or not: an
+            // existing preview costs the worker nothing to display.
             $this->db->table('ekumanov_link_preview_post')->insertOrIgnore([
                 'preview_id' => $preview->id,
                 'post_id'  => $post->id,
                 'is_link'  => 1,
             ]);
 
-            $needsFetch = $isNew
-                || $preview->retrieved_at === null
-                || Carbon::parse($preview->retrieved_at)->lt($ttlAgo);
+            if (! $mayFetch || ! ($preview->wasRecentlyCreated || $this->isDue($preview, $ttlAgo))) {
+                continue;
+            }
 
-            if ($needsFetch) {
-                // Self-link short-circuit: if the URL has the shape of a
-                // self-link (host+path match our own forum), it never goes
-                // to HTTP at all. Resolve locally — either synthesise OG data
-                // (visible public discussion) or record a permanent failure
-                // (discussion missing / hidden / private). Never falls back
-                // to HTTP because Cloudflare would block the loopback fetch
-                // anyway.
-                if ($this->localResolver->parseSelfLink($url) !== null) {
-                    $local = $this->localResolver->resolve($url);
-                    $preview->retrieved_at = Carbon::now();
-                    if ($local !== null) {
-                        $preview->http_status = 200;
-                        $preview->opengraph = $local;
-                        $preview->final_url = $url;
-                        $preview->error = null;
-                    } else {
-                        $preview->http_status = 0;
-                        $preview->error = 'self_link_not_viewable';
-                    }
-                    $preview->save();
-                } elseif ($this->queue instanceof SyncQueue) {
-                    // No async worker present: a sync queue runs the job inline,
-                    // which would block this post-save request on the remote
-                    // fetch. Leave the placeholder row (retrieved_at NULL) for
-                    // the scheduled sweep to re-dispatch from cron, where a
-                    // blocking fetch is harmless. Needs `php flarum schedule:run`
-                    // on cron; the card appears within a few minutes (the
-                    // front-end holds its place with a skeleton meanwhile).
-                    continue;
+            // Self-link short-circuit: if the URL has the shape of a
+            // self-link (host+path match our own forum), it never goes
+            // to HTTP at all. Resolve locally — either synthesise OG data
+            // (visible public discussion) or record a permanent failure
+            // (discussion missing / hidden / private). Never falls back
+            // to HTTP because Cloudflare would block the loopback fetch
+            // anyway.
+            if ($this->localResolver->parseSelfLink($url) !== null) {
+                $local = $this->localResolver->resolve($url);
+                $preview->retrieved_at = Carbon::now();
+                if ($local !== null) {
+                    $preview->http_status = 200;
+                    $preview->opengraph = $local;
+                    $preview->final_url = $url;
+                    $preview->error = null;
+                    $preview->refresh_error = null;
+                    $preview->fetch_attempts = 0;
                 } else {
-                    $this->queue->push(new FetchPreviewJob($preview->id));
+                    $preview->http_status = 0;
+                    $preview->error = 'self_link_not_viewable';
+                    // Settled: stamped so the retry pass can skip it in SQL.
+                    $preview->fetch_attempts = FailurePolicy::SETTLED_ATTEMPTS;
                 }
+                $preview->save();
+            } elseif ($this->queue instanceof SyncQueue) {
+                // No async worker present: a sync queue runs the job inline,
+                // which would block this post-save request on the remote
+                // fetch. Leave the placeholder row (retrieved_at NULL) for
+                // the scheduled sweep to re-dispatch from cron, where a
+                // blocking fetch is harmless. Needs `php flarum schedule:run`
+                // on cron; the card appears within a few minutes (the
+                // front-end holds its place with a skeleton meanwhile).
+                continue;
+            } else {
+                $this->queue->push(new FetchPreviewJob($preview->id));
             }
         }
+    }
+
+    /**
+     * Never fetched, or fetched longer ago than the TTL.
+     */
+    private function isDue(Preview $preview, Carbon $ttlAgo): bool
+    {
+        return $preview->retrieved_at === null
+            || Carbon::parse($preview->retrieved_at)->lt($ttlAgo);
+    }
+
+    /**
+     * The row for $url, created if it does not exist yet.
+     *
+     * insertOrIgnore + re-select rather than find-then-insert: two saves that
+     * carry the same new URL at the same moment (two replies quoting one link,
+     * a double-submitted edit) would both miss on the find and the loser's
+     * insert would hit the url_hash unique key — an integrity exception thrown
+     * out of a Posted listener, i.e. a 500 on a post that has already been
+     * saved. The loser now simply adopts the winner's row, and only the
+     * request that actually inserted it dispatches the fetch
+     * (wasRecentlyCreated).
+     */
+    private function findOrCreate(string $url, string $hash): ?Preview
+    {
+        // INSERT IGNORE would silently truncate an over-long URL into the
+        // column instead of failing. Remote URLs are already capped by the
+        // extractor's validator; this catches the self-links that bypass it.
+        if (strlen($url) > UrlValidator::MAX_LEN) {
+            return null;
+        }
+
+        $inserted = $this->db->table('ekumanov_link_previews')->insertOrIgnore([
+            'url' => $url,
+            'url_hash' => $hash,
+            'created_at' => Carbon::now(),
+        ]);
+
+        $preview = Preview::where('url_hash', $hash)->first();
+
+        if ($preview === null) {
+            // Ignored for some reason other than the unique key. Nothing to
+            // link; the post itself is fine.
+            $this->log->warning('link-preview: could not create a preview row', ['url' => $url]);
+
+            return null;
+        }
+
+        $preview->wasRecentlyCreated = $inserted > 0;
+
+        return $preview;
     }
 
     /**

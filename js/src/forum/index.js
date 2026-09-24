@@ -42,12 +42,85 @@ extend(CommentPost.prototype, 'onupdate', function () {
     processPreviews(this);
 });
 
+extend(CommentPost.prototype, 'onremove', function () {
+    const post = this.attrs && this.attrs.post;
+    if (post && post.id) stopPendingRefresh(post.id());
+});
+
+// ─── Pending → settled ─────────────────────────────────────────────────
+//
+// A card is fetched on the queue after the post is saved, so the author (whose
+// own post comes back from the save) and realtime recipients (who load it the
+// moment it lands) usually receive it with a `pending` skeleton. Nothing ever
+// told the page when the fetch finished: the skeleton sat there until a
+// reload. So a post that arrives with a pending preview is re-requested a few
+// times — the store update redraws it, and the settled card drops into the
+// space the skeleton already reserved.
+//
+// Bounded: offsets from the first sighting, then we stop. A fetch that has
+// not settled after ~45 s is a slow host or a busy queue, and the card will
+// be there on the next page view. One timer per post id at most.
+const PENDING_REFRESH_AT_MS = [5000, 15000, 45000];
+// post id → { key, tries, timer }. `key` is the set of pending URLs the
+// schedule was started for; a new pending URL (an edit) starts a fresh one.
+const pendingRefresh = new Map();
+
+function schedulePendingRefresh(post, list) {
+    const id = post.id && post.id();
+    if (!id) return;
+
+    const pending = list.filter((p) => p && p.pending).map((p) => p.url);
+    if (pending.length === 0) {
+        stopPendingRefresh(id); // settled — nothing left to wait for
+        return;
+    }
+
+    const key = pending.join('\n');
+    const entry = pendingRefresh.get(id);
+    if (entry && entry.key === key) return; // already scheduled, or exhausted
+
+    if (entry) clearTimeout(entry.timer);
+    const next = { key, tries: 0, timer: null };
+    pendingRefresh.set(id, next);
+    armPendingRefresh(id, next);
+}
+
+function armPendingRefresh(id, entry) {
+    if (entry.tries >= PENDING_REFRESH_AT_MS.length) return; // exhausted — keep the entry so we don't restart
+
+    const delay = PENDING_REFRESH_AT_MS[entry.tries] - (entry.tries ? PENDING_REFRESH_AT_MS[entry.tries - 1] : 0);
+
+    entry.timer = setTimeout(() => {
+        entry.timer = null;
+        entry.tries++;
+        if (pendingRefresh.get(id) !== entry) return; // superseded or removed meanwhile
+
+        app.store
+            .find('posts', id)
+            .then(() => m.redraw())
+            .catch(() => {}) // a failed refresh is not worth a user-visible error
+            .then(() => {
+                // Still ours and still pending after the redraw? Go again.
+                if (pendingRefresh.get(id) === entry) armPendingRefresh(id, entry);
+            });
+    }, delay);
+}
+
+function stopPendingRefresh(id) {
+    const entry = pendingRefresh.get(id);
+    if (!entry) return;
+    if (entry.timer) clearTimeout(entry.timer);
+    pendingRefresh.delete(id);
+}
+
 function processPreviews(commentPost) {
     const post = commentPost.attrs && commentPost.attrs.post;
     if (!post || !post.attribute) return;
 
     const previews = post.attribute('linkPreviews');
     const list = Array.isArray(previews) ? previews : [];
+
+    schedulePendingRefresh(post, list);
 
     const root = commentPost.element;
     if (!root) return;

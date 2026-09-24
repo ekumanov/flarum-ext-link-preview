@@ -3,6 +3,7 @@
 namespace Ekumanov\LinkPreview\Api\Controller;
 
 use Carbon\Carbon;
+use Ekumanov\LinkPreview\PreviewChangeNotifier;
 use Flarum\Http\RequestUtil;
 use Flarum\Post\PostRepository;
 use Flarum\User\Exception\PermissionDeniedException;
@@ -29,6 +30,7 @@ class DismissPreviewController implements RequestHandlerInterface
     public function __construct(
         private readonly PostRepository $posts,
         private readonly ConnectionInterface $db,
+        private readonly PreviewChangeNotifier $notifier,
     ) {}
 
     public function handle(ServerRequestInterface $request): ResponseInterface
@@ -44,10 +46,17 @@ class DismissPreviewController implements RequestHandlerInterface
             throw new PermissionDeniedException();
         }
 
-        $this->db->table('ekumanov_link_preview_post')
+        $changed = $this->db->table('ekumanov_link_preview_post')
             ->where('post_id', $postId)
             ->where('preview_id', $previewId)
             ->update(['dismissed_at' => Carbon::now(), 'pinned_at' => null]);
+
+        // The page this post sits on now renders differently — tell whoever
+        // caches it. Skipped when no (post, preview) pair matched, so a stale
+        // or forged previewId announces nothing.
+        if ($changed > 0) {
+            $this->notifier->postsChanged([$post], [$previewId]);
+        }
 
         return new EmptyResponse(204);
     }

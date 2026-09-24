@@ -36,6 +36,15 @@ namespace Ekumanov\LinkPreview\Http;
  * social-scraper identities recover 5 more that Chrome cannot — the sets are
  * disjoint, which is why this is a chain and not a single better string.
  * The retry only fires on a block, so ordinary fetches still cost one request.
+ *
+ * Deadline: get() optionally takes an absolute deadline (microtime(true)). Every
+ * hop and every identity then has to fit in what is left of it — each request's
+ * curl timeout is capped to the remainder, no new hop starts once it has run
+ * out, and a fallback identity is only tried when there is still time for it
+ * to plausibly finish. Without it the worst case is identities × redirects ×
+ * 10 s, far past a queue job's hard timeout. A chain cut short while still
+ * blocked comes back with `cutShort => true`, so a caller can tell "every
+ * identity was refused" from "we ran out of time before asking them all".
  */
 final class SafeHttpClient
 {
@@ -50,6 +59,16 @@ final class SafeHttpClient
      * traffic we aim at sites that already told us no.
      */
     public const BOT_BLOCK_STATUSES = [401, 403, 406, 429];
+
+    /**
+     * Below this much remaining budget a fallback identity is not started: a
+     * blocked host rarely answers the next identity fast, and a request that
+     * cannot finish just turns a clean 403 into a timeout.
+     */
+    private const MIN_SECONDS_FOR_FALLBACK = 3.0;
+
+    /** Below this much remaining budget no new request is started at all. */
+    private const MIN_SECONDS_FOR_REQUEST = 1.0;
 
     public function __construct(
         private readonly UrlValidator $urlValidator,
@@ -68,20 +87,27 @@ final class SafeHttpClient
     ) {}
 
     /**
-     * @return array{ok:true,status:int,finalUrl:string,contentType:string,headers:array<string,string>,body:string}
+     * @param  float|null $deadline absolute microtime(true) by which the whole
+     *                              call, fallbacks and redirects included, must
+     *                              be done; null = only the per-request timeouts
+     * @return array{ok:true,status:int,finalUrl:string,contentType:string,headers:array<string,string>,body:string,cutShort?:true}
      *        |array{ok:false,reason:string,detail:string}
      */
-    public function get(string $url): array
+    public function get(string $url, ?float $deadline = null): array
     {
         $agents = $this->userAgents === [] ? [null] : $this->userAgents;
 
-        $result = $this->doGet($url, $this->maxRedirects, $agents[0]);
+        $result = $this->doGet($url, $this->maxRedirects, $agents[0], $deadline);
 
         foreach (array_slice($agents, 1) as $agent) {
             if (! self::isBotBlocked($result)) {
                 break;
             }
-            $result = $this->doGet($url, $this->maxRedirects, $agent);
+            if ($deadline !== null && $deadline - microtime(true) < self::MIN_SECONDS_FOR_FALLBACK) {
+                $result['cutShort'] = true;
+                break;
+            }
+            $result = $this->doGet($url, $this->maxRedirects, $agent, $deadline);
         }
 
         return $result;
@@ -100,8 +126,15 @@ final class SafeHttpClient
      * @return array{ok:true,status:int,finalUrl:string,contentType:string,headers:array<string,string>,body:string}
      *        |array{ok:false,reason:string,detail:string}
      */
-    private function doGet(string $url, int $redirectsLeft, ?string $userAgent = null): array
+    private function doGet(string $url, int $redirectsLeft, ?string $userAgent = null, ?float $deadline = null): array
     {
+        $remaining = $deadline === null ? null : $deadline - microtime(true);
+        if ($remaining !== null && $remaining < self::MIN_SECONDS_FOR_REQUEST) {
+            // Recorded as an ordinary timeout — which it is, from the URL's
+            // point of view — so FailurePolicy treats it as retryable.
+            return self::fail(ExecutorResult::ERR_TIMEOUT, 'fetch budget exhausted');
+        }
+
         $v = $this->urlValidator->validate($url);
         if (! $v['ok']) {
             return self::fail($v['reason'], $url);
@@ -123,7 +156,16 @@ final class SafeHttpClient
         }
 
         $pinnedIp = $ips[0];
-        $result = $this->executor->execute($url, $v['host'], $pinnedIp, $v['port'], $userAgent);
+
+        // Re-read the clock: DNS may have eaten into the budget.
+        $remaining = $deadline === null ? null : $deadline - microtime(true);
+        if ($remaining !== null && $remaining < self::MIN_SECONDS_FOR_REQUEST) {
+            return self::fail(ExecutorResult::ERR_TIMEOUT, 'fetch budget exhausted');
+        }
+
+        $result = $remaining !== null && $this->executor instanceof TimeBoundedExecutor
+            ? $this->executor->executeWithin($url, $v['host'], $pinnedIp, $v['port'], $userAgent, $remaining)
+            : $this->executor->execute($url, $v['host'], $pinnedIp, $v['port'], $userAgent);
 
         if (! $result->ok) {
             return self::fail($result->error ?? 'unknown', $result->errorDetail ?? '');
@@ -139,7 +181,7 @@ final class SafeHttpClient
             if ($next === null) {
                 return self::fail(UrlValidator::REASON_MALFORMED, "bad Location: {$result->headers['location']}");
             }
-            return $this->doGet($next, $redirectsLeft - 1, $userAgent);
+            return $this->doGet($next, $redirectsLeft - 1, $userAgent, $deadline);
         }
 
         return [

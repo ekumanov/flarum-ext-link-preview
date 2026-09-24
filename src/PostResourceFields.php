@@ -52,14 +52,24 @@ class PostResourceFields
             return [];
         }
 
-        $canToggle = $context->getActor()->can('edit', $post);
-
         $previews = [];
 
         foreach ($post->getRelation('linkPreviews') as $preview) {
-            if ($data = $this->buildPreview($preview, $post, $canToggle)) {
+            if ($data = $this->buildPreview($preview, $post, false)) {
                 $previews[] = $data;
             }
+        }
+
+        // The edit check runs a full policy evaluation, and this field is
+        // serialized for every post on every page — most of which carry no
+        // preview at all. Ask only when there is a card to put the controls
+        // on. Asked once per post and not cached beyond it: some policies have
+        // side effects, so a Gate answer is never memoized across posts.
+        if ($previews !== [] && $context->getActor()->can('edit', $post)) {
+            foreach ($previews as &$data) {
+                $data['canToggle'] = true;
+            }
+            unset($data);
         }
 
         return $previews;

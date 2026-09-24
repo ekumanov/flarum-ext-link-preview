@@ -47,18 +47,34 @@ class RetryFailedPreviewsCommand extends Command
         $ignoreBackoff = (bool) $this->option('ignore-backoff');
         $dry = (bool) $this->option('dry-run');
 
-        // Candidate set is deliberately wide — the retryable/permanent split
-        // lives in FailurePolicy, in PHP, so the two callers can't drift.
-        // Over-fetch (limit * 4) because most candidates are filtered out
-        // below, by classification and then by backoff.
-        $rows = $db->table('ekumanov_link_previews')
-            ->select('id', 'url', 'error', 'http_status', 'retrieved_at', 'fetch_attempts')
-            ->whereNotNull('error')
-            ->whereNotNull('retrieved_at')
-            ->where('fetch_attempts', '<', $maxAttempts)
-            ->orderBy('retrieved_at', 'asc')
-            ->limit($limit * 4)
-            ->get();
+        // Candidates are narrowed in SQL, not just in PHP:
+        //
+        //  - Permanent failures carry fetch_attempts = SETTLED_ATTEMPTS (stamped
+        //    when classified; the 2026_09_24 migration caught up older rows),
+        //    so the attempts cap excludes them here. They used to be fetched
+        //    oldest-first and discarded below — and since a permanent failure
+        //    is never retried, its retrieved_at never moves, so they held the
+        //    head of the window forever and crowded out every retryable row.
+        //  - Only URLs some post still links. A row whose last post was
+        //    edited away or deleted serves no card; fetching it helps nobody.
+        //
+        // FailurePolicy still has the final word below, so the two cannot
+        // drift. The rows are walked with a cursor rather than a fixed
+        // over-fetch: those not yet due (backoff) are skipped, and a window
+        // full of rows waiting out a 30-day backoff must not hide the due ones
+        // behind it.
+        $rows = $db->table('ekumanov_link_previews as p')
+            ->select('p.id', 'p.url', 'p.error', 'p.http_status', 'p.retrieved_at', 'p.fetch_attempts')
+            ->whereNotNull('p.error')
+            ->whereNotNull('p.retrieved_at')
+            ->where('p.fetch_attempts', '<', min($maxAttempts, FailurePolicy::SETTLED_ATTEMPTS))
+            ->whereExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('ekumanov_link_preview_post as lp')
+                    ->whereColumn('lp.preview_id', 'p.id');
+            })
+            ->orderBy('p.retrieved_at', 'asc')
+            ->cursor();
 
         $now = Carbon::now();
         $due = [];

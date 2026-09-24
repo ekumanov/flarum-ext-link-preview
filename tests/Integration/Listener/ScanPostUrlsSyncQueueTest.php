@@ -115,7 +115,65 @@ final class ScanPostUrlsSyncQueueTest extends TestCase
         );
     }
 
-    private function makeListener(Queue $queue): ScanPostUrls
+    public function test_an_existing_fresh_preview_is_linked_without_charge_or_fetch(): void
+    {
+        $url = 'https://other.example.org/already-previewed';
+        $this->seedFreshPreview($url);
+
+        $queue = $this->createMock(Queue::class);
+        $queue->expects($this->never())->method('push');
+
+        $cache = new CacheRepository(new ArrayStore());
+        $this->makeListener($queue, $cache)->handle($this->postedEventWithLink($url));
+
+        $this->assertPivotFor($url);
+        $this->assertSame(0, (int) $cache->get('linkpreview.rl.1', 0), 'a URL that needs no fetch must not burn the allowance');
+    }
+
+    public function test_an_existing_preview_is_linked_even_when_the_allowance_is_spent(): void
+    {
+        // Before: every URL was charged, and those over the allowance were
+        // dropped before the pivot insert — so a post never got the card that
+        // already existed for its link.
+        $url = 'https://other.example.org/already-previewed';
+        $this->seedFreshPreview($url);
+
+        $queue = $this->createMock(Queue::class);
+        $queue->expects($this->never())->method('push');
+
+        $cache = new CacheRepository(new ArrayStore());
+        $cache->put('linkpreview.rl.1', 10000, 3600); // allowance long gone
+
+        $this->makeListener($queue, $cache)->handle($this->postedEventWithLink($url));
+
+        $this->assertPivotFor($url);
+    }
+
+    private function seedFreshPreview(string $url): void
+    {
+        $this->db->table('ekumanov_link_previews')->insert([
+            'url' => $url,
+            'url_hash' => sha1($url, true),
+            'http_status' => 200,
+            'created_at' => date('Y-m-d H:i:s'),
+            'retrieved_at' => date('Y-m-d H:i:s'),
+        ]);
+    }
+
+    private function assertPivotFor(string $url): void
+    {
+        $preview = Preview::query()->where('url', $url)->first();
+        $this->assertNotNull($preview);
+        $this->assertSame(1, Preview::query()->where('url', $url)->count(), 'no duplicate row');
+
+        $pivot = $this->db->table('ekumanov_link_preview_post')
+            ->where('post_id', 4242)
+            ->where('preview_id', $preview->id)
+            ->first();
+        $this->assertNotNull($pivot, 'the existing preview must be linked to the post');
+    }
+
+    private function makeListener(Queue $queue, ?CacheRepository $cache = null): ScanPostUrls
     {
         // get() returns null for every key → SettingsRepository falls back to
         // its compiled-in defaults (30-day TTL, 20 URLs/hour, empty lists).
@@ -126,7 +184,7 @@ final class ScanPostUrlsSyncQueueTest extends TestCase
         // and the listener reaches the queue branch we're testing.
         $resolver = new LocalDiscussionResolver('https://forum.example.com', $flarumSettings);
         $extractor = new UrlExtractor(new UrlValidator(), $settings, $resolver);
-        $limiter = new UrlSubmissionLimiter(new CacheRepository(new ArrayStore()), $settings);
+        $limiter = new UrlSubmissionLimiter($cache ?? new CacheRepository(new ArrayStore()), $settings);
 
         return new ScanPostUrls(
             $extractor,
@@ -172,7 +230,7 @@ final class ScanPostUrlsSyncQueueTest extends TestCase
         $schema->create('ekumanov_link_previews', function (Blueprint $table) {
             $table->increments('id');
             $table->string('url', 2048);
-            $table->binary('url_hash')->nullable();
+            $table->binary('url_hash')->nullable()->unique();
             $table->unsignedSmallInteger('http_status')->nullable();
             $table->string('error', 255)->nullable();
             $table->text('opengraph')->nullable();
