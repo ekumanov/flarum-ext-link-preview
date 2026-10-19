@@ -151,9 +151,11 @@ class FetchPreviewJob extends AbstractJob
         // permanent failure. Fetching our own public hostname from our own
         // server is what Cloudflare answers with a challenge.
         //
-        // Authoritative in both directions, unlike a remote re-fetch: a
-        // discussion that has since gone private or been deleted MUST lose its
-        // card, so "keep the old card on failure" does not apply here.
+        // A discussion link always succeeds here: it stores only a marker, and
+        // whether a reader gets a card is decided when they read it (see
+        // LocalDiscussionResolver). Tag links are authoritative in both
+        // directions — a tag that has gone private MUST lose its card, so
+        // "keep the old card on failure" does not apply here.
         if ($localResolver->isSelfHost($preview->url)) {
             $local = $localResolver->resolve($preview->url);
             $preview->retrieved_at = Carbon::now();

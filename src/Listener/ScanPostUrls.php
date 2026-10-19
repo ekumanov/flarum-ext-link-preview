@@ -150,11 +150,11 @@ final class ScanPostUrls
 
             // Self-link short-circuit: if the URL has the shape of a
             // self-link (host+path match our own forum), it never goes
-            // to HTTP at all. Resolve locally — either synthesise OG data
-            // (visible public discussion) or record a permanent failure
-            // (discussion missing / hidden / private). Never falls back
-            // to HTTP because Cloudflare would block the loopback fetch
-            // anyway.
+            // to HTTP at all. A discussion link stores only a marker; the
+            // card is resolved per reader when the post is read (see
+            // LocalDiscussionResolver), so the else branch is a safety net.
+            // Never falls back to HTTP because Cloudflare would block the
+            // loopback fetch anyway.
             if ($this->localResolver->parseSelfLink($url) !== null) {
                 $local = $this->localResolver->resolve($url);
                 $preview->retrieved_at = Carbon::now();

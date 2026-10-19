@@ -3,8 +3,10 @@
 namespace Ekumanov\LinkPreview\LocalDiscussion;
 
 use Flarum\Discussion\Discussion;
+use Flarum\Post\Post;
 use Flarum\Settings\SettingsRepositoryInterface;
 use Flarum\User\Guest;
+use Flarum\User\User;
 use s9e\TextFormatter\Utils;
 
 /**
@@ -19,11 +21,17 @@ use s9e\TextFormatter\Utils;
  *      attacker crafting a self-link gets no fetch.
  *   3. Faster — one DB lookup vs one HTTP request.
  *
- * Permission model: we resolve under a Guest scope. Only fully-public
- * discussions (visible to anyone, no restricted tags, not hidden/unapproved,
- * not BYOBU private) produce cards. Private discussions return null and the
- * caller falls back to plain hyperlink — same outcome a guest crawler would
- * see if they hit the URL directly.
+ * Discussion links are resolved when they are READ, not when they are
+ * posted. The stored row is only a marker (see resolve()); the title, the
+ * excerpt and — for a link to a reply — whose reply it is are looked up by
+ * resolveFor() each time a post is serialized, under the reader's own
+ * permissions. Nothing a discussion or reply said is ever written into the
+ * previews table, so nothing can outlive a hide, a delete, an edit or a move
+ * into a restricted tag, and a reader is never shown more than they could
+ * open themselves.
+ *
+ * Tag pages and the index are still resolved once, under a Guest scope, and
+ * stored like a fetched page: they change rarely and say nothing private.
  *
  * URL forms recognised (after stripping the forum base path):
  *   /d/{id}                         → discussion view
@@ -32,9 +40,10 @@ use s9e\TextFormatter\Utils;
  *   /d/{id}-some-slug/{postNumber}  → same, with slug
  *   /t/{slug}, /t/{parent}/{child}  → tag page
  *   / (and the bare base path)      → forum index
- * The post-number permalink form is matched but ignored — the card always
- * describes the DISCUSSION, not a specific reply. Post-anchored URLs scroll
- * to the post in the browser but the OG card is the discussion's.
+ * A post number makes the card describe that reply — its author, date and
+ * an excerpt — under the discussion's title. When the reader cannot see that
+ * reply (hidden, deleted, unapproved, or the number names no comment) the
+ * card falls back to the discussion's.
  *
  * Anything else on our own host — a user profile, a loose file, a sibling app
  * sharing the domain — resolves to null, and the caller records a permanent
@@ -47,6 +56,12 @@ final class LocalDiscussionResolver
 {
     /** Plain-text description excerpted from the first post, capped at this many chars. */
     private const DESCRIPTION_MAX = 200;
+
+    /**
+     * What a discussion link stores in `opengraph` instead of the discussion
+     * itself. PostResourceFields sees it and resolves the card live.
+     */
+    public const LIVE_MARKER = 'discussion';
 
     public const KIND_DISCUSSION = 'discussion';
     public const KIND_TAG = 'tag';
@@ -89,10 +104,30 @@ final class LocalDiscussionResolver
     }
 
     /**
+     * The discussion a self-link addresses and, when it names one, the post
+     * number after it.
+     *
+     * @return array{discussion:int,post:?int}|null
+     */
+    public function parseSelfTarget(string $url): ?array
+    {
+        $parsed = $this->parseSelfPath($url);
+
+        if ($parsed === null || $parsed['kind'] !== self::KIND_DISCUSSION) {
+            return null;
+        }
+
+        return [
+            'discussion' => (int) $parsed['value'],
+            'post' => isset($parsed['post']) ? (int) $parsed['post'] : null,
+        ];
+    }
+
+    /**
      * Classify a self-hosted URL into the thing it addresses. Returns null when
      * the URL is not ours at all, or sits outside the forum's mount path.
      *
-     * @return array{kind:string,value:string}|null
+     * @return array{kind:string,value:string,post?:string}|null
      */
     public function parseSelfPath(string $url): ?array
     {
@@ -122,8 +157,14 @@ final class LocalDiscussionResolver
         }
 
         // /d/{numeric-id} optionally followed by -slug and/or /post-number.
-        if (preg_match('#^/d/(\d+)(?:-[^/]*)?(?:/\d+)?/?$#', $urlPath, $m) === 1) {
-            return ['kind' => self::KIND_DISCUSSION, 'value' => $m[1]];
+        if (preg_match('#^/d/(\d+)(?:-[^/]*)?(?:/(\d+))?/?$#', $urlPath, $m) === 1) {
+            $parsed = ['kind' => self::KIND_DISCUSSION, 'value' => $m[1]];
+
+            if (isset($m[2]) && $m[2] !== '') {
+                $parsed['post'] = $m[2];
+            }
+
+            return $parsed;
         }
 
         // /t/{slug} or /t/{parent}/{child} — a child tag is addressed by its
@@ -147,13 +188,15 @@ final class LocalDiscussionResolver
     }
 
     /**
-     * Resolve a URL into OpenGraph-shaped data, or null if not a self-link
-     * or the target discussion isn't publicly viewable. The returned shape
-     * matches the `opengraph` JSON column the rest of the extension reads,
-     * so locally-synthesised data is indistinguishable from an HTTP-fetched
-     * card by the time the display layer renders it.
+     * What to STORE for a self-link, or null when there is nothing to store
+     * (not ours, or a tag a guest cannot see). The returned shape matches the
+     * `opengraph` JSON column the rest of the extension reads.
      *
-     * @return array{title:string,description:?string,site_name:string,url:string,type:string,images:list<array>}|null
+     * A discussion link stores only a marker, whatever the discussion's state:
+     * whether there is a card, and what it says, is decided per reader by
+     * resolveFor(). Tag pages and the index store their card.
+     *
+     * @return array<string,mixed>|null
      */
     public function resolve(string $url): ?array
     {
@@ -163,7 +206,7 @@ final class LocalDiscussionResolver
         }
 
         return match ($parsed['kind']) {
-            self::KIND_DISCUSSION => $this->resolveDiscussion($url, (int) $parsed['value']),
+            self::KIND_DISCUSSION => ['live' => self::LIVE_MARKER, 'url' => $url],
             self::KIND_TAG => $this->resolveTag($url, $parsed['value']),
             self::KIND_INDEX => $this->resolveIndex($url),
             default => null,
@@ -171,17 +214,25 @@ final class LocalDiscussionResolver
     }
 
     /**
-     * @return array{title:string,description:?string,site_name:string,url:string,type:string,images:list<array>}|null
+     * The card for a link to a discussion or a reply, as `$actor` may see it,
+     * or null when they may not see the discussion at all.
+     *
+     * Same shape as a stored card, plus `reply` when the link named a post the
+     * actor can see: {number, author, time}.
+     *
+     * @return array<string,mixed>|null
      */
-    private function resolveDiscussion(string $url, int $discussionId): ?array
+    public function resolveFor(string $url, User $actor): ?array
     {
-        // Guest scope — only synthesise for discussions visible to the world.
-        // Anything hidden/unapproved/restricted/private returns null and the
-        // caller falls back to plain hyperlink.
+        $target = $this->parseSelfTarget($url);
+        if ($target === null) {
+            return null;
+        }
+
         $discussion = Discussion::query()
-            ->whereVisibleTo(new Guest())
+            ->whereVisibleTo($actor)
             ->with('firstPost')
-            ->find($discussionId);
+            ->find($target['discussion']);
 
         if ($discussion === null) {
             return null;
@@ -192,9 +243,9 @@ final class LocalDiscussionResolver
             return null; // shouldn't happen, but defensively
         }
 
-        return [
+        $card = [
             'title' => $title,
-            'description' => $this->excerptFirstPost($discussion),
+            'description' => $this->excerpt($discussion->firstPost),
             'site_name' => $this->siteName(),
             'url' => $url,
             'type' => 'article',
@@ -206,10 +257,37 @@ final class LocalDiscussionResolver
             // setting (or no fof/seo) → no image → text-only card, as before.
             'images' => $this->brandImage(),
         ];
+
+        if ($target['post'] !== null && ($reply = $this->visibleReply($discussion, $target['post'], $actor))) {
+            $card['description'] = $this->excerpt($reply);
+            $card['reply'] = [
+                'number' => (int) $reply->number,
+                'author' => $reply->user ? (string) $reply->user->display_name : null,
+                'time' => $reply->created_at?->toIso8601String(),
+            ];
+        }
+
+        return $card;
     }
 
     /**
-     * Tag pages. Guest-scoped like discussions, so a restricted tag produces
+     * The comment at this number, if the actor may see it. Post visibility
+     * covers what discussion visibility does not: a hidden reply, one awaiting
+     * approval, a private one.
+     */
+    private function visibleReply(Discussion $discussion, int $number, User $actor): ?Post
+    {
+        return Post::query()
+            ->whereVisibleTo($actor)
+            ->where('discussion_id', $discussion->id)
+            ->where('number', $number)
+            ->where('type', 'comment')
+            ->with('user')
+            ->first();
+    }
+
+    /**
+     * Tag pages. Guest-scoped and stored, so a restricted tag produces
      * no card — the roster of tags a guest can't see stays unenumerable.
      * Returns null when flarum/tags isn't installed, which is why the class is
      * referenced lazily rather than imported.
@@ -284,21 +362,22 @@ final class LocalDiscussionResolver
         return $url !== '' ? [['url' => $url, 'brand' => true]] : [];
     }
 
-    private function excerptFirstPost(Discussion $discussion): ?string
+    private function excerpt(?Post $post): ?string
     {
-        $firstPost = $discussion->firstPost;
-        if ($firstPost === null) {
+        if ($post === null) {
             return null;
         }
 
-        $rawContent = $firstPost->getRawOriginal('content');
+        $rawContent = $post->getRawOriginal('content');
         if (! is_string($rawContent) || $rawContent === '') {
             return null;
         }
 
-        // removeFormatting strips s9e XML tags and BBCode markup, leaving plain text.
-        $plain = Utils::removeFormatting($rawContent);
-        $plain = trim((string) preg_replace('/\s+/', ' ', $plain));
+        // A reply usually opens by quoting the post it answers. That text is
+        // someone else's, so the excerpt starts after it — unless the post is
+        // nothing but a quote, when the quote is all there is to show.
+        $plain = self::plainText(Utils::removeTag($rawContent, 'QUOTE'))
+            ?: self::plainText($rawContent);
 
         if ($plain === '') {
             return null;
@@ -312,5 +391,21 @@ final class LocalDiscussionResolver
         $excerpt = rtrim($excerpt, " .,;:!?");
 
         return $excerpt.'…';
+    }
+
+    /**
+     * Stored post XML as one line of readable text. A mention's stored text is
+     * its markup (`@"Alice"#p123`), so mentions are swapped for `@Alice` first;
+     * removeFormatting then strips the remaining tags and markup.
+     */
+    private static function plainText(string $xml): string
+    {
+        $xml = (string) preg_replace_callback(
+            '#<(POSTMENTION|USERMENTION)\b([^>]*)>.*?</\1>#s',
+            fn (array $m) => preg_match('#\bdisplayname="([^"]*)"#', $m[2], $name) === 1 ? '@'.$name[1] : '',
+            $xml
+        );
+
+        return trim((string) preg_replace('/\s+/', ' ', Utils::removeFormatting($xml)));
     }
 }

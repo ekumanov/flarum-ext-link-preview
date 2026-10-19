@@ -132,6 +132,49 @@ final class LocalDiscussionResolverTest extends TestCase
         ];
     }
 
+    #[DataProvider('selfTargetProvider')]
+    public function test_self_target_carries_the_post_number(string $url, ?array $expected): void
+    {
+        $r = new LocalDiscussionResolver('https://myforum.com/forum', new InMemorySettings());
+        $this->assertSame($expected, $r->parseSelfTarget($url));
+    }
+
+    public static function selfTargetProvider(): array
+    {
+        return [
+            'discussion only'   => ['https://myforum.com/forum/d/2449-slug', ['discussion' => 2449, 'post' => null]],
+            'bare id + reply'   => ['https://myforum.com/forum/d/2449/196', ['discussion' => 2449, 'post' => 196]],
+            'slug + reply'      => ['https://myforum.com/forum/d/2449-slug/196', ['discussion' => 2449, 'post' => 196]],
+            'reply + slash'     => ['https://myforum.com/forum/d/2449-slug/196/', ['discussion' => 2449, 'post' => 196]],
+            'trailing slash'    => ['https://myforum.com/forum/d/2449-slug/', ['discussion' => 2449, 'post' => null]],
+            'tag is no target'  => ['https://myforum.com/forum/t/pianos', null],
+            'foreign host'      => ['https://example.com/forum/d/1/2', null],
+        ];
+    }
+
+    public function test_a_discussion_link_stores_only_a_marker(): void
+    {
+        // Nothing a discussion says may be written into the previews table:
+        // the card is resolved per reader. resolve() must not touch the DB for
+        // a discussion link, which is also why this runs without one.
+        $r = new LocalDiscussionResolver('https://myforum.com/forum', new InMemorySettings());
+        $url = 'https://myforum.com/forum/d/2449-slug/196';
+
+        $this->assertSame(['live' => LocalDiscussionResolver::LIVE_MARKER, 'url' => $url], $r->resolve($url));
+    }
+
+    public function test_excerpt_text_skips_the_quote_and_names_mentions(): void
+    {
+        // Shaped like a real reply: it opens by quoting the post it answers.
+        $xml = '<r><QUOTE><i>&gt; </i><p><POSTMENTION discussionid="235" displayname="delvento" id="5196" number="9">@"delvento"#p5196</POSTMENTION> What are your goals?</p></QUOTE>'
+            ."\n\n".'<p><USERMENTION displayname="Jo &amp; Co" id="7">@"Jo &amp; Co"#7</USERMENTION> Busted!   My goal is <s>**</s>this<e>**</e>.</p></r>';
+
+        $removeQuotes = \s9e\TextFormatter\Utils::removeTag($xml, 'QUOTE');
+        $method = new \ReflectionMethod(LocalDiscussionResolver::class, 'plainText');
+
+        $this->assertSame('@Jo & Co Busted! My goal is this.', $method->invoke(null, $removeQuotes));
+    }
+
     public function test_self_path_is_null_for_foreign_hosts(): void
     {
         $r = new LocalDiscussionResolver('https://myforum.com/forum', new InMemorySettings());

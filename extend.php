@@ -8,6 +8,7 @@ use Ekumanov\LinkPreview\Console\RefreshSelfLinksCommand;
 use Ekumanov\LinkPreview\Console\RetryFailedPreviewsCommand;
 use Ekumanov\LinkPreview\Console\SweepStuckPreviewsCommand;
 use Ekumanov\LinkPreview\Preview;
+use Ekumanov\LinkPreview\Listener\PurgeSelfLinkCards;
 use Ekumanov\LinkPreview\Listener\ScanPostUrls;
 use Ekumanov\LinkPreview\PostResourceFields;
 use Flarum\Api\Endpoint;
@@ -101,6 +102,21 @@ return [
     (new Extend\Event())
         ->listen(Posted::class, ScanPostUrls::class)
         ->listen(Revised::class, ScanPostUrls::class),
+
+    // Self-link cards are resolved when read, so only page caches can hold a
+    // stale one: re-render the posts linking to whatever just changed. Tags and
+    // approval are optional, hence named by string.
+    (new Extend\Event())
+        ->listen(\Flarum\Post\Event\Hidden::class, PurgeSelfLinkCards::class)
+        ->listen(\Flarum\Post\Event\Restored::class, PurgeSelfLinkCards::class)
+        ->listen(\Flarum\Post\Event\Deleted::class, PurgeSelfLinkCards::class)
+        ->listen(Revised::class, PurgeSelfLinkCards::class)
+        ->listen(\Flarum\Discussion\Event\Hidden::class, PurgeSelfLinkCards::class)
+        ->listen(\Flarum\Discussion\Event\Restored::class, PurgeSelfLinkCards::class)
+        ->listen(\Flarum\Discussion\Event\Deleted::class, PurgeSelfLinkCards::class)
+        ->listen(\Flarum\Discussion\Event\Renamed::class, PurgeSelfLinkCards::class)
+        ->listen('Flarum\Tags\Event\DiscussionWasTagged', PurgeSelfLinkCards::class)
+        ->listen('Flarum\Approval\Event\PostWasApproved', PurgeSelfLinkCards::class),
 
     // Per-(post, preview) display override: dismiss force-hides the inline
     // card (link becomes hover-only), pin force-shows it (titled link gets

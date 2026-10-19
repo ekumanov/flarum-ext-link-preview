@@ -4,12 +4,15 @@ namespace Ekumanov\LinkPreview;
 
 use Carbon\Carbon;
 use Ekumanov\LinkPreview\Icon\IconStore;
+use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
 use Ekumanov\LinkPreview\Parser\IconPicker;
 use Ekumanov\LinkPreview\Settings\SettingsRepository;
 use Flarum\Api\Context;
 use Flarum\Api\Schema;
 use Flarum\Post\Post;
 use Illuminate\Support\Arr;
+use Psr\Http\Message\ServerRequestInterface;
+use WeakMap;
 
 class PostResourceFields
 {
@@ -32,11 +35,23 @@ class PostResourceFields
         'www.youtube-nocookie.com',
     ];
 
+    /**
+     * Live self-link cards already resolved in this request, per URL. Keyed by
+     * the request so it dies with it: a long-lived queue worker serializes for
+     * many actors, and a card resolved for one must never reach another.
+     *
+     * @var WeakMap<ServerRequestInterface, array<string, array|null>>
+     */
+    private WeakMap $liveCards;
+
     public function __construct(
         private readonly IconPicker $icons,
         private readonly SettingsRepository $settings,
         private readonly IconStore $store,
-    ) {}
+        private readonly LocalDiscussionResolver $local,
+    ) {
+        $this->liveCards = new WeakMap();
+    }
 
     public function __invoke(): array
     {
@@ -55,7 +70,13 @@ class PostResourceFields
         $previews = [];
 
         foreach ($post->getRelation('linkPreviews') as $preview) {
-            if ($data = $this->buildPreview($preview, $post, false)) {
+            $live = $this->liveCard($preview, $context);
+
+            if ($live === false) {
+                continue; // a self-link the reader may not see
+            }
+
+            if ($data = $this->buildPreview($preview, $post, false, $live)) {
                 $previews[] = $data;
             }
         }
@@ -75,7 +96,32 @@ class PostResourceFields
         return $previews;
     }
 
-    private function buildPreview(Preview $preview, Post $post, bool $canToggle): ?array
+    /**
+     * The card for a link to a discussion on this forum, resolved now for the
+     * reader rather than read from the row (see LocalDiscussionResolver).
+     * Null when the row is not such a link, false when the reader may not see
+     * what it points at.
+     */
+    private function liveCard(Preview $preview, Context $context): array|false|null
+    {
+        if ($this->local->parseSelfLink($preview->url) === null) {
+            return null;
+        }
+
+        $cards = $this->liveCards[$context->request] ?? [];
+
+        if (! array_key_exists($preview->url, $cards)) {
+            $cards[$preview->url] = $this->local->resolveFor($preview->url, $context->getActor());
+            $this->liveCards[$context->request] = $cards;
+        }
+
+        return $cards[$preview->url] ?? false;
+    }
+
+    /**
+     * @param array|null $live the self-link card to use instead of the stored data
+     */
+    private function buildPreview(Preview $preview, Post $post, bool $canToggle, ?array $live = null): ?array
     {
         // Image-typed URLs already render inline as <img> via Flarum's formatter.
         if ($preview->mime && str_starts_with($preview->mime, 'image/')) {
@@ -123,8 +169,11 @@ class PostResourceFields
             ];
         }
 
-        $og = $preview->opengraph ?: [];
-        $fallback = $preview->fallback ?: [];
+        // A self-link's card is never taken from the row: rows written before
+        // live resolution still hold a copy of the discussion, and that copy
+        // must not outlive a hide or a move into a private tag.
+        $og = $live ?? ($preview->opengraph ?: []);
+        $fallback = $live !== null ? [] : ($preview->fallback ?: []);
 
         $title = Arr::get($og, 'title') ?: Arr::get($fallback, 'title');
         if (! $title) {
@@ -190,6 +239,9 @@ class PostResourceFields
             'favicon' => $siteMark,
             'siteName' => (string) $siteName,
             'domain' => $domain,
+            // A link to a particular reply: whose it is and when, shown under the
+            // discussion title. Present only when the reader can see the reply.
+            'reply' => $live['reply'] ?? null,
             'dismissed' => $dismissed,
             'pinned' => $pinned,
             'canToggle' => $canToggle,

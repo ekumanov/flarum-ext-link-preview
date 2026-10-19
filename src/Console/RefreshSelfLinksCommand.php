@@ -21,6 +21,13 @@ use Illuminate\Console\Command;
  * re-fetch only happens when a post containing the URL is saved again
  * after TTL expiry.
  *
+ * Since v1.11.0 it is also the upgrade step for live self-link cards: rows
+ * stored before then carry the discussion's title and first-post excerpt (or
+ * a `self_link_not_viewable` error for a discussion a guest could not see).
+ * Re-resolving turns each into the content-free marker, so no stored copy of
+ * a discussion outlives it, and members get cards for discussions only they
+ * can see.
+ *
  * This command rewrites them all in place, synchronously (no queue —
  * resolution is one local DB lookup per row, same code path FetchPreviewJob
  * uses for self-links). Idempotent; safe to re-run any time.
@@ -71,6 +78,7 @@ class RefreshSelfLinksCommand extends Command
                     $preview->opengraph = $local;
                     $preview->final_url = $preview->url;
                     $preview->error = null;
+                    $preview->refresh_error = null;
                     // Local data is authoritative and image-less; wipe any
                     // residual metadata from a prior HTTP fetch so a stale
                     // fallback/icon thumbnail can't leak through firstImage().

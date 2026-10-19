@@ -1,6 +1,7 @@
 import app from 'flarum/forum/app';
 import { extend } from 'flarum/common/extend';
 import CommentPost from 'flarum/forum/components/CommentPost';
+import humanTime from 'flarum/common/utils/humanTime';
 
 const CARD_CLASS = 'LinkPreview-card';
 const WRAPPER_CLASS = 'LinkPreview-card-wrapper';
@@ -533,9 +534,11 @@ function buildCard(preview) {
     // Screen readers: collapse the multi-div content into a single descriptive
     // accessible name. Without this they announce site / title / desc as three
     // separate text nodes (verbose); with aria-label they read it as one link.
+    const byline = replyByline(preview.reply);
     const labelParts = [
         preview.siteName || preview.domain,
         preview.title,
+        byline,
         preview.description ? truncate(preview.description, DESC_MAX) : null,
     ].filter(Boolean);
     const previewLabel = trans('preview_aria_prefix', 'Link preview');
@@ -610,6 +613,22 @@ function buildCard(preview) {
     title.className = CARD_CLASS + '-title';
     title.textContent = preview.title;
     text.appendChild(title);
+
+    // A link to a particular reply: the title stays the discussion's, and this
+    // line says whose reply the excerpt below is. Same comment icon core puts
+    // on its `#123 💬45` label, so the two read as the same kind of thing.
+    if (byline) {
+        const meta = document.createElement('div');
+        meta.className = CARD_CLASS + '-reply';
+        const icon = document.createElement('i');
+        icon.className = 'icon fas fa-comment';
+        icon.setAttribute('aria-hidden', 'true');
+        meta.appendChild(icon);
+        const who = document.createElement('span');
+        who.textContent = byline;
+        meta.appendChild(who);
+        text.appendChild(meta);
+    }
 
     if (preview.description) {
         const desc = document.createElement('div');
@@ -824,6 +843,20 @@ function sendToggle(preview, action) {
         method: 'POST',
         url: `${app.forum.attribute('apiUrl')}/link-previews/posts/${preview.postId}/previews/${preview.previewId}/${action}`,
     });
+}
+
+/**
+ * "Author · 3 Oct" for a reply card, or null. The author is missing when the
+ * account was deleted; the date then stands alone.
+ */
+function replyByline(reply) {
+    if (!reply) return null;
+
+    const parts = [];
+    if (reply.author) parts.push(reply.author);
+    if (reply.time) parts.push(humanTime(reply.time));
+
+    return parts.length ? parts.join(' · ') : null;
 }
 
 function trans(key, fallback) {

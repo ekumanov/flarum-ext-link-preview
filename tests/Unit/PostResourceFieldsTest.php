@@ -3,6 +3,8 @@
 namespace Ekumanov\LinkPreview\Tests\Unit;
 
 use Ekumanov\LinkPreview\Icon\IconStore;
+use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
+use Ekumanov\LinkPreview\Tests\Unit\Listener\InMemorySettings;
 use Ekumanov\LinkPreview\Parser\IconPicker;
 use Ekumanov\LinkPreview\Tests\Support\TempDisk;
 use Ekumanov\LinkPreview\PostResourceFields;
@@ -220,12 +222,39 @@ final class PostResourceFieldsTest extends TestCase
      * @param array<string,string> $settings
      * @return array<string,mixed>
      */
-    private function build(Preview $preview, array $settings = []): array
+    public function test_a_self_link_card_comes_from_the_live_lookup_not_the_row(): void
+    {
+        // A row written before live resolution still holds a copy of the
+        // discussion. That copy must not reach a reader.
+        $preview = $this->preview(icons: null);
+        $preview->url = $preview->final_url = 'https://example.com/forum/d/7/12';
+        $preview->opengraph = ['title' => 'Stale title', 'description' => 'Stale first post'];
+
+        $payload = $this->build($preview, [], [
+            'title' => 'Live title',
+            'description' => 'What reply 12 says',
+            'site_name' => 'Forum',
+            'images' => [],
+            'reply' => ['number' => 12, 'author' => 'Alice', 'time' => '2026-10-01T10:00:00+00:00'],
+        ]);
+
+        $this->assertSame('Live title', $payload['title']);
+        $this->assertSame('What reply 12 says', $payload['description']);
+        $this->assertSame(['number' => 12, 'author' => 'Alice', 'time' => '2026-10-01T10:00:00+00:00'], $payload['reply']);
+    }
+
+    public function test_an_external_card_carries_no_reply(): void
+    {
+        $this->assertNull($this->build($this->preview(icons: null))['reply']);
+    }
+
+    private function build(Preview $preview, array $settings = [], ?array $live = null): array
     {
         $fields = new PostResourceFields(
             new IconPicker(),
             new SettingsRepository($this->settings($settings)),
             new IconStore(TempDisk::make($this->root)),
+            new LocalDiscussionResolver('https://example.com/forum', new InMemorySettings()),
         );
 
         $post = new Post();
@@ -233,7 +262,7 @@ final class PostResourceFieldsTest extends TestCase
 
         $method = new ReflectionMethod($fields, 'buildPreview');
 
-        return $method->invoke($fields, $preview, $post, false);
+        return $method->invoke($fields, $preview, $post, false, $live);
     }
 
     private function preview(mixed $icons): Preview
