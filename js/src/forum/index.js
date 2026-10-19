@@ -13,6 +13,9 @@ const TOGGLE_CLASS = 'LinkPreview-previewToggle';
 const SIG_ATTR = 'data-lp-sig';
 const COUNT_ATTR = 'data-lp-n';
 const BOUND_ATTR = 'data-lp-bound';
+// Marks a self-link whose core `#123` label we swapped back to its address
+// (see showAddress).
+const UNLABELLED_ATTR = 'data-lp-unlabelled';
 const DESC_MAX = 220;
 const HOVER_SHOW_MS = 250;
 const HOVER_HIDE_MS = 300;
@@ -33,6 +36,8 @@ const bodyRegistry = new WeakMap();
 // the attribute tracks "currently preview-bearing" (and is recounted by the
 // staleness probe), while listeners can only be attached once per element.
 const hoverListenersAttached = new WeakSet();
+// Unlabelled self-link anchor → the label nodes core rendered into it.
+const savedLabels = new WeakMap();
 
 extend(CommentPost.prototype, 'oncreate', function () {
     processPreviews(this);
@@ -165,6 +170,7 @@ function renderBody(body, list) {
     bodyRegistry.set(body, list);
 
     body.querySelectorAll('.' + WRAPPER_CLASS + ', .' + TOGGLE_CLASS).forEach((el) => el.remove());
+    body.querySelectorAll('a[' + UNLABELLED_ATTR + ']').forEach(restoreLabel);
 
     const byUrl = new Map();
     for (const preview of list) {
@@ -211,6 +217,7 @@ function renderBody(body, list) {
         const at = rawAnchor || anchors[0];
 
         if (visible) {
+            showAddress(at);
             at.parentNode.insertBefore(buildWrapper(preview, body), at.nextSibling);
         } else if (!POINTER_HOVERS && !preview.pending) {
             // A pending preview has nothing to show yet — no tap target until the
@@ -282,6 +289,38 @@ function isRawLink(anchor) {
  */
 function isRelabelledDiscussionLink(anchor) {
     return anchor.classList.contains('UrlLink--discussion');
+}
+
+/**
+ * Show the address again on a relabelled discussion link that has a card.
+ *
+ * Core's `#123` label exists because a bare address says nothing useful; the
+ * card says more than either, so the label beside it only repeats the card in
+ * shorthand. With a card, the link reads as what the writer pasted — the same
+ * as a raw external link with its card. Without one (dismissed, or no preview
+ * at all) core's label stays, since then it is the best thing on offer.
+ *
+ * The label's nodes are kept so `restoreLabel` can put them back when the
+ * card goes away (a dismiss re-renders the body without a Mithril redraw).
+ * `UrlLink--internal` stays: it is what routes the click through the app.
+ */
+function showAddress(anchor) {
+    if (!anchor.classList.contains('UrlLink--discussion')) return;
+
+    savedLabels.set(anchor, Array.from(anchor.childNodes));
+    anchor.setAttribute(UNLABELLED_ATTR, '');
+    anchor.classList.remove('UrlLink--discussion');
+    anchor.textContent = anchor.getAttribute('href');
+}
+
+function restoreLabel(anchor) {
+    const nodes = savedLabels.get(anchor);
+    anchor.removeAttribute(UNLABELLED_ATTR);
+    if (!nodes) return;
+
+    savedLabels.delete(anchor);
+    anchor.replaceChildren(...nodes);
+    anchor.classList.add('UrlLink--discussion');
 }
 
 /**
