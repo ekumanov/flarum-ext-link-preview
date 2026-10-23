@@ -209,6 +209,76 @@ final class PostResourceFieldsTest extends TestCase
         $this->assertFalse($this->build($preview)['imageSmall']);
     }
 
+    public function test_an_og_image_on_the_readers_own_network_is_dropped(): void
+    {
+        // Live on pianoclack.com: the vendor's WordPress leaks its dev host.
+        // Hot-linked, it made Chrome flag the forum as not fully secure and
+        // ask the reader for local-network access.
+        $preview = $this->preview(icons: null);
+        $preview->url = $preview->final_url = 'https://www.productionvoices.com/product/300-grand/';
+        $preview->opengraph = [
+            'title' => '300 Grand - Production Voices',
+            'images' => [['url' => 'http://productionvoice.local/wp-content/uploads/2022/02/300-Grand-Main-Screen-Shot-Crop.jpg', 'width' => 2011]],
+        ];
+
+        $payload = $this->build($preview);
+
+        $this->assertNotNull($payload, 'the card itself must survive');
+        $this->assertNull($payload['image']);
+        $this->assertFalse($payload['imageSmall']);
+    }
+
+    public function test_a_plain_http_og_image_is_upgraded_to_https(): void
+    {
+        $preview = $this->preview(icons: null);
+        $preview->opengraph = [
+            'title' => 'An article',
+            'images' => [['url' => 'http://example.com/hero.jpg']],
+        ];
+
+        $this->assertSame('https://example.com/hero.jpg', $this->build($preview)['image']);
+    }
+
+    public function test_the_secure_url_of_a_group_is_used_when_the_base_is_http(): void
+    {
+        $preview = $this->preview(icons: null);
+        $preview->opengraph = [
+            'title' => 'An article',
+            'images' => [['url' => 'http://example.com/hero.jpg', 'secure_url' => 'https://example.com/hero.jpg']],
+        ];
+
+        $this->assertSame('https://example.com/hero.jpg', $this->build($preview)['image']);
+    }
+
+    public function test_a_bad_first_image_falls_through_to_the_next(): void
+    {
+        $preview = $this->preview(icons: null);
+        $preview->opengraph = [
+            'title' => 'An article',
+            'images' => [
+                ['url' => 'https://192.168.0.5/hero.jpg'],
+                ['url' => 'https://cdn.example.com/hero.jpg', 'width' => 1200],
+            ],
+        ];
+
+        $payload = $this->build($preview);
+
+        $this->assertSame('https://cdn.example.com/hero.jpg', $payload['image']);
+        $this->assertFalse($payload['imageSmall'], 'the width must come from the image actually used');
+    }
+
+    public function test_a_relative_og_image_resolves_against_the_linked_page_not_the_forum(): void
+    {
+        $preview = $this->preview(icons: null);
+        $preview->final_url = 'https://www.example.net/articles/42';
+        $preview->opengraph = [
+            'title' => 'An article',
+            'images' => [['url' => '/media/hero.jpg']],
+        ];
+
+        $this->assertSame('https://www.example.net/media/hero.jpg', $this->build($preview)['image']);
+    }
+
     public function test_relative_icons_resolve_against_final_url(): void
     {
         $preview = $this->preview(icons: [['href' => '/favicon.ico']]);

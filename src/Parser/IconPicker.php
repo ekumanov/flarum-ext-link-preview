@@ -286,6 +286,17 @@ final class IconPicker
     }
 
     /**
+     * absolutize() for callers holding the base as a string — the og:image
+     * resolves against the same final URL the icons do.
+     */
+    public static function resolve(string $href, string $baseUrl): ?string
+    {
+        $base = parse_url($baseUrl);
+
+        return is_array($base) && isset($base['host']) ? self::absolutize($href, $base) : null;
+    }
+
+    /**
      * Resolve an href against the final URL. Rejects anything that isn't
      * http/https once resolved — `data:` and `javascript:` hrefs exist in the
      * wild and neither belongs in an <img src> we hand to every reader.

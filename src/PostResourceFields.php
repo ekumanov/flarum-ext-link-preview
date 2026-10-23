@@ -3,6 +3,7 @@
 namespace Ekumanov\LinkPreview;
 
 use Carbon\Carbon;
+use Ekumanov\LinkPreview\Http\PublicImageUrl;
 use Ekumanov\LinkPreview\Icon\IconStore;
 use Ekumanov\LinkPreview\LocalDiscussion\LocalDiscussionResolver;
 use Ekumanov\LinkPreview\Parser\IconPicker;
@@ -184,7 +185,7 @@ class PostResourceFields
         $siteName = Arr::get($og, 'site_name') ?: $domain;
         $description = Arr::get($og, 'description') ?: Arr::get($fallback, 'description');
 
-        $image = $this->firstImage($og);
+        $image = $this->firstImage($og, $clickUrl);
         $imageUrl = $image['url'] ?? null;
         $favicon = $this->favicon($preview, $clickUrl);
 
@@ -293,16 +294,41 @@ class PostResourceFields
      * hero image (blurry cards + a guest privacy leak). The current
      * HtmlFallbackParser no longer writes images there.
      *
+     * A plain-http image is upgraded to https. One on the reader's own
+     * network (see PublicImageUrl) is skipped, and the card falls through to
+     * the next one or to no picture.
+     * Checked here rather than at fetch time so rows already stored are
+     * covered the moment this ships.
+     *
      * @return array{url:string,brand:bool,width:int}|null
      */
-    private function firstImage(array $og): ?array
+    private function firstImage(array $og, string $baseUrl): ?array
     {
         foreach (Arr::get($og, 'images') ?: [] as $image) {
-            $src = Arr::get($image, 'secure_url') ?: Arr::get($image, 'url');
+            $brand = (bool) Arr::get($image, 'brand');
+            $src = null;
+
+            foreach ([Arr::get($image, 'secure_url'), Arr::get($image, 'url')] as $candidate) {
+                if (! is_string($candidate) || trim($candidate) === '') {
+                    continue;
+                }
+
+                // Our own share logo: same origin as the forum, whatever that is.
+                if ($brand) {
+                    $src = $candidate;
+                    break;
+                }
+
+                $absolute = IconPicker::resolve(trim($candidate), $baseUrl);
+                if ($absolute !== null && ($src = PublicImageUrl::filter($absolute)) !== null) {
+                    break;
+                }
+            }
+
             if ($src) {
                 return [
                     'url' => (string) $src,
-                    'brand' => (bool) Arr::get($image, 'brand'),
+                    'brand' => $brand,
                     // Only what the page declared. We do not fetch the image to
                     // find out — see the README on why there is no image proxy.
                     'width' => (int) Arr::get($image, 'width'),
